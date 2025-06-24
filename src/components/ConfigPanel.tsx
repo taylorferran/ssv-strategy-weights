@@ -18,6 +18,7 @@ import {
   Flex,
   Badge,
 } from '@chakra-ui/react';
+import { useEffect } from 'react';
 import { DeleteIcon, AddIcon } from '@chakra-ui/icons';
 import type { BAppConfig, TokenCoefficient } from '../types';
 
@@ -25,9 +26,74 @@ interface ConfigPanelProps {
   config: BAppConfig;
   onConfigChange: (config: BAppConfig) => void;
   onAddRandomStrategy: () => void;
+  strategies?: any[];
+  isSimulation?: boolean;
 }
 
-const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy }: ConfigPanelProps) => {
+const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies = [], isSimulation = false }: ConfigPanelProps) => {
+  // Extract unique tokens from strategies
+  const getUniqueTokensFromStrategies = () => {
+    const tokenSet = new Set<string>();
+    console.log('🔍 [ConfigPanel] Extracting tokens from strategies:', strategies);
+    
+    strategies.forEach(strategy => {
+      console.log('🔍 [ConfigPanel] Processing strategy:', strategy);
+      if (strategy.tokenWeights) {
+        strategy.tokenWeights.forEach((tw: any) => {
+          console.log('🔍 [ConfigPanel] Found token:', tw.token);
+          tokenSet.add(tw.token);
+        });
+      }
+    });
+    
+    const tokens = Array.from(tokenSet);
+    console.log('🔍 [ConfigPanel] Unique tokens found:', tokens);
+    return tokens;
+  };
+
+  // Replace tokens with only the detected ones (calculator mode only)
+  const ensureCoefficientsForDetectedTokens = () => {
+    if (isSimulation) {
+      console.log('🔍 [ConfigPanel] Skipping auto-update in simulation mode');
+      return; // Don't auto-update in simulation mode
+    }
+    
+    const detectedTokens = getUniqueTokensFromStrategies();
+    console.log('🔍 [ConfigPanel] Detected tokens:', detectedTokens);
+    console.log('🔍 [ConfigPanel] Current tokens:', config.tokenCoefficients.map(tc => tc.token));
+    
+    // Only proceed if we have detected tokens and they're different from current ones
+    if (detectedTokens.length === 0) {
+      console.log('🔍 [ConfigPanel] No tokens detected, keeping current configuration');
+      return;
+    }
+    
+    const currentTokens = config.tokenCoefficients.map(tc => tc.token);
+    const tokensChanged = detectedTokens.length !== currentTokens.length || 
+                         !detectedTokens.every(token => currentTokens.includes(token));
+    
+    if (tokensChanged) {
+      // Replace with only detected tokens, preserving existing coefficients where possible
+      const newCoefficients = detectedTokens.map(token => {
+        const existingCoeff = config.tokenCoefficients.find(tc => tc.token === token);
+        return {
+          token: token as any,
+          coefficient: existingCoeff?.coefficient ?? 1 // Use existing coefficient or default to 1
+        };
+      });
+      
+      console.log('🔍 [ConfigPanel] Replacing tokens with detected ones:', newCoefficients);
+      onConfigChange({ ...config, tokenCoefficients: newCoefficients });
+    } else {
+      console.log('🔍 [ConfigPanel] Tokens unchanged, no update needed');
+    }
+  };
+
+  // Run this effect when strategies change (calculator mode only)
+  useEffect(() => {
+    ensureCoefficientsForDetectedTokens();
+  }, [strategies, isSimulation]);
+
   const handleBAppIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onConfigChange({ ...config, bAppId: e.target.value });
   };
@@ -144,10 +210,10 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy }: ConfigPane
       <VStack spacing={6} align="stretch">
         <Flex justify="space-between" align="center">
           <Text color="ssv.600" fontWeight="semibold" fontSize="md">
-            Token Coefficients
+            {isSimulation ? "Token Coefficients" : "Strategy Token Coefficients"}
           </Text>
           <Badge colorScheme="ssv" fontSize="xs" px={2} py={1} borderRadius="md">
-            {config.tokenCoefficients.length} tokens
+            {config.tokenCoefficients.length} tokens {!isSimulation && "(auto-detected)"}
           </Badge>
         </Flex>
         
@@ -159,20 +225,36 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy }: ConfigPane
                   <FormLabel color="gray.600" fontWeight="medium" fontSize="sm" mb={2}>
                     Token Address
                   </FormLabel>
-                  <Input
-                    value={coefficient.token}
-                    onChange={(e) => handleTokenCoefficientChange(index, 'token', e.target.value)}
-                    placeholder="0x..."
-                    size="md"
-                    fontSize="xs"
-                    fontFamily="mono"
-                    bg="white"
-                    border="1px solid"
-                    borderColor="gray.300"
-                    _hover={{ borderColor: "ssv.300" }}
-                    _focus={{ borderColor: "ssv.500" }}
-                    borderRadius="lg"
-                  />
+                  {isSimulation ? (
+                    <Input
+                      value={coefficient.token}
+                      onChange={(e) => handleTokenCoefficientChange(index, 'token', e.target.value)}
+                      placeholder="0x..."
+                      size="md"
+                      fontSize="xs"
+                      fontFamily="mono"
+                      bg="white"
+                      border="1px solid"
+                      borderColor="gray.300"
+                      _hover={{ borderColor: "ssv.300" }}
+                      _focus={{ borderColor: "ssv.500" }}
+                      borderRadius="lg"
+                    />
+                  ) : (
+                    <Input
+                      value={coefficient.token}
+                      size="md"
+                      fontSize="xs"
+                      fontFamily="mono"
+                      bg="gray.100"
+                      border="1px solid"
+                      borderColor="gray.300"
+                      borderRadius="lg"
+                      isReadOnly
+                      _hover={{}}
+                      _focus={{}}
+                    />
+                  )}
                 </FormControl>
                 <FormControl flex={1}>
                   <FormLabel color="gray.600" fontWeight="medium" fontSize="sm" mb={2}>
@@ -199,29 +281,33 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy }: ConfigPane
                     </NumberInputStepper>
                   </NumberInput>
                 </FormControl>
-                <IconButton
-                  aria-label="Remove token"
-                  icon={<DeleteIcon />}
-                  colorScheme="red"
-                  variant="ghost"
-                  size="md"
-                  onClick={() => removeTokenCoefficient(index)}
-                />
+                {isSimulation && (
+                  <IconButton
+                    aria-label="Remove token"
+                    icon={<DeleteIcon />}
+                    colorScheme="red"
+                    variant="ghost"
+                    size="md"
+                    onClick={() => removeTokenCoefficient(index)}
+                  />
+                )}
               </HStack>
             </Box>
           ))}
           
-          <Button 
-            onClick={addTokenCoefficient} 
-            colorScheme="ssv" 
-            variant="outline"
-            size="lg"
-            leftIcon={<AddIcon />}
-            borderRadius="xl"
-            _hover={{ bg: "ssv.50" }}
-          >
-            Add Token Coefficient
-          </Button>
+          {isSimulation && (
+            <Button 
+              onClick={addTokenCoefficient} 
+              colorScheme="ssv" 
+              variant="outline"
+              size="lg"
+              leftIcon={<AddIcon />}
+              borderRadius="xl"
+              _hover={{ bg: "ssv.50" }}
+            >
+              Add Token
+            </Button>
+          )}
         </VStack>
       </VStack>
     </VStack>

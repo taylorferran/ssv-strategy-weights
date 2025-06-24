@@ -30,4 +30,16 @@ export interface BAppConfig {
   tokenCoefficients: TokenCoefficient[];
   validatorCoefficient: number;
   calculationType: CalculationType;
+}
+
+// Add interface for the actual structure used in the UI components
+export interface UIStrategy {
+  id?: string | number;
+  strategy?: string | number;
+  tokenWeights: {
+    token: string;
+    weight: number;
+    depositAmount?: string;
+  }[];
+  validatorBalanceWeight?: number;
 } 

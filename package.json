@@ -14,12 +14,12 @@
     "@chakra-ui/react": "^2.8.2",
     "@emotion/react": "^11.11.3",
     "@emotion/styled": "^11.11.0",
-    "@ssv-labs/bapps-sdk": "^0.0.8",
+    "@ssv-labs/bapps-sdk": "^0.0.10",
     "framer-motion": "^11.0.5",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-minimal-pie-chart": "^9.1.0",
-    "viem": "^2.23.10"
+    "viem": "^2.31.3"
   },
   "devDependencies": {
     "@types/react": "^18.2.55",
