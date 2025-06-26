@@ -90,9 +90,14 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
   };
 
   // Run this effect when strategies change (calculator mode only)
+  // Only run when we first load strategies, not during editing
   useEffect(() => {
-    ensureCoefficientsForDetectedTokens();
-  }, [strategies, isSimulation]);
+    // Only auto-detect tokens in calculator mode and when we have strategies but no token coefficients yet
+    if (!isSimulation && strategies.length > 0 && config.tokenCoefficients.length === 0) {
+      console.log('🔍 [ConfigPanel] Auto-detecting tokens for initial load');
+      ensureCoefficientsForDetectedTokens();
+    }
+  }, [strategies, isSimulation, config.tokenCoefficients.length]);
 
   const handleBAppIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onConfigChange({ ...config, bAppId: e.target.value });
@@ -212,9 +217,24 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
           <Text color="ssv.600" fontWeight="semibold" fontSize="md">
             {isSimulation ? "Token Coefficients" : "Strategy Token Coefficients"}
           </Text>
-          <Badge colorScheme="ssv" fontSize="xs" px={2} py={1} borderRadius="md">
-            {config.tokenCoefficients.length} tokens {!isSimulation && "(auto-detected)"}
-          </Badge>
+          <HStack spacing={2}>
+            <Badge colorScheme="ssv" fontSize="xs" px={2} py={1} borderRadius="md">
+              {config.tokenCoefficients.length} tokens
+            </Badge>
+            {!isSimulation && strategies.length > 0 && (
+              <Button
+                size="xs"
+                variant="outline"
+                colorScheme="ssv"
+                onClick={() => {
+                  console.log('🔍 [ConfigPanel] Manual token refresh triggered');
+                  ensureCoefficientsForDetectedTokens();
+                }}
+              >
+                Refresh Tokens
+              </Button>
+            )}
+          </HStack>
         </Flex>
         
         <VStack spacing={4} align="stretch">

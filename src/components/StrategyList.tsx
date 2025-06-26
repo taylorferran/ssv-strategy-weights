@@ -23,7 +23,7 @@ import {
 } from '@chakra-ui/react';
 import { AddIcon, DeleteIcon, EditIcon } from '@chakra-ui/icons';
 import { formatEther, parseEther } from 'viem';
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
 interface StrategyListProps {
   strategies: any[];
@@ -45,6 +45,9 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
   
   const hasRows = strategies && strategies.length > 0;
   const toast = useToast();
+  
+  // Track input values during editing to allow free typing
+  const [editingValues, setEditingValues] = useState<{[key: string]: string}>({});
 
   // Helper function to get deposit amount for a token in a strategy
   const getDepositAmount = (strategy: any, tokenAddress: string): string => {
@@ -383,10 +386,19 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                               min="0"
                               step="0.000001"
                               value={(() => {
+                                const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
+                                
+                                // If we're currently editing this field, use the editing value
+                                if (editingValues[inputKey] !== undefined) {
+                                  console.log('🔍 [Input] Using editing value:', editingValues[inputKey]);
+                                  return editingValues[inputKey];
+                                }
+                                
+                                // Otherwise, use the actual data value
                                 try {
                                   const amount = getDepositAmount(strategy, tokenWeight.token);
                                   const ethValue = formatEther(BigInt(amount || "0"));
-                                  console.log('🔍 [Input] Current value:', { amount, ethValue });
+                                  console.log('🔍 [Input] Using data value:', { amount, ethValue });
                                   return ethValue;
                                 } catch (error) {
                                   console.error('Error formatting deposit amount:', error);
@@ -395,11 +407,31 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                               })()}
                               onChange={(e) => {
                                 const valueString = e.target.value;
-                                console.log('🔍 [Input] onChange triggered:', { valueString });
+                                const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
+                                console.log('🔍 [Input] onChange triggered:', { valueString, inputKey });
+                                
+                                // Store the current editing value to allow free typing
+                                setEditingValues(prev => ({
+                                  ...prev,
+                                  [inputKey]: valueString
+                                }));
+                              }}
+                              onBlur={(e) => {
+                                const valueString = e.target.value;
+                                const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
+                                console.log('🔍 [Input] onBlur triggered:', { valueString, inputKey });
+                                
                                 try {
-                                  // Allow empty string temporarily for editing
-                                  if (valueString === "") {
-                                    console.log('🔍 [Input] Empty value, setting to 0');
+                                  // Clear the editing state
+                                  setEditingValues(prev => {
+                                    const newState = { ...prev };
+                                    delete newState[inputKey];
+                                    return newState;
+                                  });
+                                  
+                                  // Handle empty string - set to 0
+                                  if (valueString === "" || valueString === undefined) {
+                                    console.log('🔍 [Input] Empty value on blur, setting to 0');
                                     handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
                                     return;
                                   }
@@ -408,16 +440,21 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                                   const numValue = Number(valueString);
                                   if (!isNaN(numValue) && numValue >= 0) {
                                     const weiValue = parseEther(valueString).toString();
-                                    console.log('🔍 [Input] Updating with wei value:', weiValue);
+                                    console.log('🔍 [Input] Valid value on blur, updating with wei value:', weiValue);
                                     handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', weiValue);
-                                  } else if (numValue < 0) {
-                                    console.log('🔍 [Input] Negative value, setting to 0');
+                                  } else {
+                                    console.log('🔍 [Input] Invalid value on blur, setting to 0');
                                     handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
                                   }
                                 } catch (error) {
-                                  console.error('Invalid ether value:', valueString, error);
-                                  // For invalid input, set to 0 to prevent errors
+                                  console.error('Invalid ether value on blur:', valueString, error);
                                   handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                // Handle Enter key to commit the value
+                                if (e.key === 'Enter') {
+                                  e.currentTarget.blur();
                                 }
                               }}
                               onFocus={(e) => {
@@ -458,8 +495,8 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                     </HStack>
                   ))}
                   
-                  {/* Add Token button - show in simulation mode */}
-                  {editable && (
+                  {/* Add Token button - only show in config mode, not simulation mode */}
+                  {editable && !isSimulation && (
                     <Button
                       size="sm"
                       variant="outline"
