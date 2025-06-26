@@ -20,6 +20,8 @@ import {
 } from '@chakra-ui/react';
 import { useEffect } from 'react';
 import { DeleteIcon, AddIcon } from '@chakra-ui/icons';
+import { InlineMath, BlockMath } from 'react-katex';
+import 'katex/dist/katex.min.css';
 import type { BAppConfig, TokenCoefficient } from '../types';
 
 interface ConfigPanelProps {
@@ -31,6 +33,34 @@ interface ConfigPanelProps {
 }
 
 const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies = [], isSimulation = false }: ConfigPanelProps) => {
+  // Get the LaTeX formula for the current calculation type
+  const getFormulaLatex = (calculationType: string) => {
+    switch (calculationType) {
+      case 'arithmetic':
+        return '\\bar{x} = \\frac{\\sum_{i=1}^{n} w_i x_i}{\\sum_{i=1}^{n} w_i}';
+      case 'geometric':
+        return '\\bar{x} = \\left(\\prod_{i=1}^{n} x_i^{w_i}\\right)^{\\frac{1}{\\sum_{i=1}^{n} w_i}}';
+      case 'harmonic':
+        return 'H = \\frac{n}{\\sum_{i=1}^{n} \\frac{w_i}{x_i}} = \\left(\\frac{\\sum_{i=1}^{n} w_i x_i^{-1}}{\\sum_{i=1}^{n} w_i}\\right)^{-1}';
+      default:
+        return '';
+    }
+  };
+
+  // Get the description for the current calculation type
+  const getFormulaDescription = (calculationType: string) => {
+    switch (calculationType) {
+      case 'arithmetic':
+        return 'Weighted arithmetic mean of strategy values';
+      case 'geometric':
+        return 'Weighted geometric mean of strategy values';
+      case 'harmonic':
+        return 'Weighted harmonic mean of strategy values';
+      default:
+        return '';
+    }
+  };
+
   // Extract unique tokens from strategies
   const getUniqueTokensFromStrategies = () => {
     const tokenSet = new Set<string>();
@@ -207,6 +237,38 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
             </NumberInput>
           </FormControl>
         </HStack>
+
+        {/* Formula Display */}
+        {getFormulaLatex(config.calculationType) && (
+          <Box 
+            p={4} 
+            bg="blue.50" 
+            borderRadius="xl" 
+            border="1px solid" 
+            borderColor="blue.200"
+            mt={4}
+          >
+            <VStack spacing={3} align="center">
+              <Text fontSize="sm" color="blue.700" fontWeight="medium">
+                {getFormulaDescription(config.calculationType)}
+              </Text>
+              <Box 
+                p={3} 
+                bg="white" 
+                borderRadius="lg" 
+                border="1px solid" 
+                borderColor="blue.100"
+                w="100%"
+                textAlign="center"
+              >
+                <BlockMath math={getFormulaLatex(config.calculationType)} />
+              </Box>
+              <Text fontSize="xs" color="blue.600">
+                Where <InlineMath math="w_i" /> = weight, <InlineMath math="x_i" /> = strategy value, <InlineMath math="n" /> = number of strategies
+              </Text>
+            </VStack>
+          </Box>
+        )}
       </VStack>
 
       <Divider borderColor="gray.200" />

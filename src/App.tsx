@@ -202,7 +202,32 @@ function App() {
       console.log('🔍 [Simulation] First strategy details:', strategiesWithAllTokens[0]);
     };
     fetchSimulationStrategies();
-  }, [simulationConfig.bAppId, simulationConfig.tokenCoefficients]);
+  }, [simulationConfig.bAppId]); // Only reload when BApp ID changes, not when token coefficients change
+
+  // Handle token coefficient changes without reloading all data (preserves user edits)
+  useEffect(() => {
+    if (simulationStrategies.length > 0 && simulationConfig.tokenCoefficients.length > 0) {
+      console.log('🔍 [Simulation] Token coefficients changed, updating existing strategies without reload');
+      console.log('🔍 [Simulation] Current strategies before token update:', simulationStrategies);
+      console.log('🔍 [Simulation] New token coefficients:', simulationConfig.tokenCoefficients);
+      
+      // Only add missing tokens to existing strategies, preserving all current data
+      const updatedStrategies = ensureAllTokensInStrategies(simulationStrategies, simulationConfig.tokenCoefficients);
+      
+      // Only update if there are actually new tokens added
+      const hasNewTokens = updatedStrategies.some((strategy, idx) => 
+        strategy.tokenWeights.length > simulationStrategies[idx]?.tokenWeights.length
+      );
+      
+      if (hasNewTokens) {
+        console.log('🔍 [Simulation] New tokens detected, updating strategies');
+        console.log('🔍 [Simulation] Updated strategies with new tokens:', updatedStrategies);
+        setSimulationStrategies(updatedStrategies);
+      } else {
+        console.log('🔍 [Simulation] No new tokens to add, keeping current strategies');
+      }
+    }
+  }, [simulationConfig.tokenCoefficients]);
 
   // Update simulation deposits when strategies change (for user-added tokens)
   useEffect(() => {

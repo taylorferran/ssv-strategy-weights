@@ -117,9 +117,13 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
   const handleAddStrategy = () => {
     if (!onStrategiesChange) return;
     
+    // Generate a random number between 0-100 for simulated strategy ID
+    const randomNumber = Math.floor(Math.random() * 101); // 0-100 inclusive
+    const simulatedId = `S${randomNumber}`;
+    
     const newStrategy = {
-      id: Date.now(), // Use timestamp as temp ID
-      strategy: Date.now(), // Also set strategy field for compatibility
+      id: simulatedId,
+      strategy: simulatedId, // Also set strategy field for compatibility
       tokenWeights: [
         {
           token: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // ETH
@@ -152,26 +156,6 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
       duration: 2000,
       isClosable: true,
     });
-  };
-
-  const handleUpdateDepositAmount = (strategyIndex: number, tokenIndex: number, newAmount: string) => {
-    if (!onStrategiesChange) return;
-    
-    const updatedStrategies = [...strategies];
-    // Store the deposit amount (in wei format for consistency)
-    if (!updatedStrategies[strategyIndex].tokenWeights[tokenIndex].depositAmount) {
-      updatedStrategies[strategyIndex].tokenWeights[tokenIndex].depositAmount = "0";
-    }
-    updatedStrategies[strategyIndex].tokenWeights[tokenIndex].depositAmount = newAmount;
-    onStrategiesChange(updatedStrategies);
-  };
-
-  const handleUpdateTokenAddress = (strategyIndex: number, tokenIndex: number, newAddress: string) => {
-    if (!onStrategiesChange) return;
-    
-    const updatedStrategies = [...strategies];
-    updatedStrategies[strategyIndex].tokenWeights[tokenIndex].token = newAddress;
-    onStrategiesChange(updatedStrategies);
   };
 
   const handleUpdateValidatorBalance = (strategyIndex: number, newBalance: number) => {
@@ -323,7 +307,7 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                   <Box bg="ssv.50" borderRadius="lg" p={3}>
                     <HStack justify="space-between">
                       <Text fontSize="sm" fontWeight="semibold" color="ssv.600">
-                        Validator Balance Weight
+                        Validator Balance
                       </Text>
                       {editable ? (
                         <NumberInput
