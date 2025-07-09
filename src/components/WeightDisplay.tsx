@@ -15,6 +15,7 @@ import { CopyIcon, CheckIcon } from '@chakra-ui/icons';
 
 interface WeightDisplayProps {
   weights: Map<string, number>;
+  allStrategies?: any[]; // All strategies to show, even those without weights
   isSimulation?: boolean;
   simulationResults?: any[]; // For detailed breakdown in simulation mode
 }
@@ -30,28 +31,32 @@ const PIE_COLORS = [
   '#718096', // gray
 ];
 
-const WeightDisplay = ({ weights, isSimulation, simulationResults }: WeightDisplayProps) => {
-  // Debug logging
-  console.log('🔍 [WeightDisplay] Component rendered with:', {
-    weights: weights,
-    weightEntries: Array.from(weights.entries()),
-    weightsSize: weights.size,
-    isSimulation,
-    simulationResults: simulationResults?.length || 0
-  });
-  
+const WeightDisplay = ({ weights, allStrategies, isSimulation, simulationResults }: WeightDisplayProps) => {
   // Calculate total weight for normalization
   const totalWeight = Array.from(weights.values()).reduce((sum, weight) => sum + weight, 0);
-  console.log('🔍 [WeightDisplay] Total weight calculated:', totalWeight);
   
-  // Normalize weights to percentages (0-100)
-  const normalizedWeights = Array.from(weights.entries()).map(([strategy, weight]) => ({
-    strategy,
-    rawWeight: weight,
-    normalizedWeight: totalWeight > 0 ? (weight / totalWeight) * 100 : 0
-  }));
-  
-  console.log('🔍 [WeightDisplay] Normalized weights:', normalizedWeights);
+  // Create normalized weights for ALL strategies (including those with 0 weight)
+  const normalizedWeights = (() => {
+    if (allStrategies && allStrategies.length > 0) {
+      // Show all strategies, using 0 weight for strategies not in weights Map
+      return allStrategies.map(strategy => {
+        const strategyId = (strategy.id || strategy.strategy)?.toString();
+        const weight = weights.get(strategyId) || 0;
+        return {
+          strategy: strategyId,
+          rawWeight: weight,
+          normalizedWeight: totalWeight > 0 ? (weight / totalWeight) * 100 : 0
+        };
+      });
+    } else {
+      // Fallback to old behavior if allStrategies not provided
+      return Array.from(weights.entries()).map(([strategy, weight]) => ({
+        strategy,
+        rawWeight: weight,
+        normalizedWeight: totalWeight > 0 ? (weight / totalWeight) * 100 : 0
+      }));
+    }
+  })();
     
   const { hasCopied, onCopy } = useClipboard(
     normalizedWeights
@@ -59,40 +64,28 @@ const WeightDisplay = ({ weights, isSimulation, simulationResults }: WeightDispl
       .join('\n')
   );
 
-  const pieData = normalizedWeights.map(({ strategy, normalizedWeight }, idx) => ({
+  // Create pie data only for strategies with weight > 0%
+  const pieData = normalizedWeights
+    .filter(({ normalizedWeight }) => normalizedWeight > 0)
+    .map(({ strategy, normalizedWeight }, idx) => ({
+      title: `Strategy ${strategy}`,
+      value: normalizedWeight,
+      color: PIE_COLORS[idx % PIE_COLORS.length],
+    }));
+  
+  // Create breakdown data for ALL strategies (including 0% weights)
+  const breakdownData = normalizedWeights.map(({ strategy, normalizedWeight }, idx) => ({
     title: `Strategy ${strategy}`,
     value: normalizedWeight,
     color: PIE_COLORS[idx % PIE_COLORS.length],
   }));
   
-  console.log('🔍 [WeightDisplay] Pie data for chart:', pieData);
-  console.log('🔍 [WeightDisplay] Pie data length:', pieData.length);
-  console.log('🔍 [WeightDisplay] Pie data values:', pieData.map(d => d.value));
-  
-  // Debug specific issues
-  console.log('🚀 [DEBUG-PIE-CHART] Detailed pie chart analysis:');
-  pieData.forEach((entry, idx) => {
-    console.log(`🚀 [DEBUG-PIE-CHART] Entry ${idx + 1}:`, {
-      title: entry.title,
-      value: entry.value,
-      color: entry.color,
-      isZero: entry.value === 0,
-      isNaN: isNaN(entry.value),
-      isFinite: isFinite(entry.value)
-    });
-  });
-  
   const totalPieValue = pieData.reduce((sum, entry) => sum + entry.value, 0);
-  console.log('🚀 [DEBUG-PIE-CHART] Total pie value:', totalPieValue);
-  console.log('🚀 [DEBUG-PIE-CHART] All values are zero:', pieData.every(entry => entry.value === 0));
-  console.log('🚀 [DEBUG-PIE-CHART] Has NaN values:', pieData.some(entry => isNaN(entry.value)));
-  console.log('🚀 [DEBUG-PIE-CHART] Has infinite values:', pieData.some(entry => !isFinite(entry.value)));
   
   // Check if pie chart should render
-  const shouldRenderChart = pieData.length > 0 && totalPieValue > 0 && pieData.some(entry => entry.value > 0);
-  console.log('🚀 [DEBUG-PIE-CHART] Should render chart:', shouldRenderChart);
+  const shouldRenderChart = pieData.length > 0 && totalPieValue > 0;
 
-  if (pieData.length === 0) {
+  if (breakdownData.length === 0) {
     return (
       <Box maxH="500px" overflowY="auto" px={2}>
         <VStack spacing={8} align="center" py={12}>
@@ -113,28 +106,39 @@ const WeightDisplay = ({ weights, isSimulation, simulationResults }: WeightDispl
         {/* Chart Section */}
         <Box textAlign="center">
           <Box w="240px" h="240px" mx="auto" mb={4}>
-            <PieChart
-              data={pieData}
-              label={({ dataEntry }) => `${Math.round(dataEntry.percentage)}%`}
-              labelStyle={{
-                fontSize: '11px',
-                fontFamily: 'Inter, sans-serif',
-                fill: '#fff',
-                fontWeight: 'bold',
-              }}
-              radius={42}
-              labelPosition={72}
-              animate
-              animationDuration={800}
-              lineWidth={60}
-            />
+            {shouldRenderChart ? (
+              <PieChart
+                data={pieData}
+                label={({ dataEntry }) => `${Math.round(dataEntry.percentage)}%`}
+                labelStyle={{
+                  fontSize: '11px',
+                  fontFamily: 'Inter, sans-serif',
+                  fill: '#fff',
+                  fontWeight: 'bold',
+                }}
+                radius={42}
+                labelPosition={72}
+                animate
+                animationDuration={800}
+                lineWidth={60}
+              />
+            ) : (
+              <VStack spacing={4} justify="center" h="240px">
+                <Text color="gray.400" fontSize="md" fontWeight="medium">
+                  No Active Weights
+                </Text>
+                <Text color="gray.500" fontSize="sm" textAlign="center">
+                  All strategies have 0% weight
+                </Text>
+              </VStack>
+            )}
           </Box>
           
           <Text fontSize="md" fontWeight="semibold" color="gray.600" mb={1}>
             Total Weight Distribution
           </Text>
           <Text fontSize="sm" color="gray.500">
-            {pieData.length} strategies calculated
+            {pieData.length} strategies with weight &gt; 0%, {breakdownData.length} total
           </Text>
         </Box>
 
@@ -146,33 +150,34 @@ const WeightDisplay = ({ weights, isSimulation, simulationResults }: WeightDispl
             Strategy Breakdown
           </Text>
           <VStack spacing={2} align="stretch">
-            {pieData.map((entry, idx) => (
+            {breakdownData.map((entry, idx) => (
               <Flex
                 key={entry.title}
-                bg="gray.50"
+                bg={entry.value > 0 ? "gray.50" : "gray.25"}
                 borderRadius="lg"
                 p={3}
                 align="center"
                 justify="space-between"
                 border="1px solid"
-                borderColor="gray.200"
-                _hover={{ bg: "gray.100", transform: "translateY(-1px)" }}
+                borderColor={entry.value > 0 ? "gray.200" : "gray.150"}
+                _hover={{ bg: entry.value > 0 ? "gray.100" : "gray.50", transform: "translateY(-1px)" }}
                 transition="all 0.2s"
+                opacity={entry.value > 0 ? 1 : 0.7}
               >
                 <HStack spacing={3}>
                   <Box
                     w={3}
                     h={3}
-                    bg={entry.color}
+                    bg={entry.value > 0 ? entry.color : "gray.300"}
                     borderRadius="full"
                     boxShadow="sm"
                   />
-                  <Text fontSize="sm" fontWeight="medium" color="gray.700">
+                  <Text fontSize="sm" fontWeight="medium" color={entry.value > 0 ? "gray.700" : "gray.500"}>
                     {entry.title.replace('Strategy ', 'Strategy #')}
                   </Text>
                 </HStack>
                 <Badge
-                  colorScheme="ssv"
+                  colorScheme={entry.value > 0 ? "ssv" : "gray"}
                   variant="subtle"
                   fontSize="xs"
                   px={2}
@@ -247,6 +252,8 @@ const WeightDisplay = ({ weights, isSimulation, simulationResults }: WeightDispl
                                   <Text color="gray.700" fontFamily="mono">
                                     {tw.token === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" 
                                       ? "ETH" 
+                                      : tw.token === "0x9f5d4ec84fc4785788ab44f9de973cf34f7a038e"
+                                      ? "SSV"
                                       : `${tw.token.slice(0, 6)}...${tw.token.slice(-4)}`}
                                   </Text>
                                   <Badge colorScheme="gray" variant="outline" fontSize="xs">

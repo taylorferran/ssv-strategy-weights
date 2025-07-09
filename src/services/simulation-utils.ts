@@ -1,4 +1,4 @@
-import type { StrategyTokenWeight, UIStrategy } from '../types';
+import type { StrategyTokenWeight, UIStrategy, TokenCoefficient, WeightCalculationOptions } from '../types';
 
 // Types for simulation data
 export interface SimulationStrategy {
@@ -33,115 +33,277 @@ export interface SimulationWeightResult {
 }
 
 /**
- * Calculate strategy weights for simulation using the exact same logic as the SDK's getParticipantWeights
- * but with user-provided data instead of on-chain data
+ * Helper function to calculate the sum of all token coefficients
  */
-export const calculateSimulationWeights = (config: SimulationConfig): SimulationWeightResult[] => {
-  const { strategies, tokenConfigs } = config;
+const calculateCoefficientsSum = (coefficients: TokenCoefficient[]): number => {
+  return coefficients.reduce((sum, coeff) => sum + coeff.coefficient, 0);
+};
+
+/**
+ * Helper function to calculate weighted totals for arithmetic mean
+ * This combines token amounts weighted by coefficients + delegated balance weighted by validator coefficient
+ */
+const calculateWeightTotals = (
+  strategy: StrategyTokenWeight,
+  coefficients: TokenCoefficient[],
+  validatorCoefficient: number
+): number => {
+  // Calculate token portion
+  const tokenTotal = coefficients.reduce((sum, coeff) => {
+    const tokenData = strategy.tokens[coeff.token];
+    if (tokenData && tokenData.amount && parseFloat(tokenData.amount) > 0) {
+      return sum + (parseFloat(tokenData.amount) * coeff.coefficient);
+    }
+    return sum;
+  }, 0);
   
-  const strategyWeightsMap = new Map<string | number, SimulationWeightResult>();
-  const riskByTokenAndStrategy = new Map<string, Map<string | number, number>>();
+  // Calculate delegated balance portion
+  const delegatedTotal = (strategy.validatorBalanceWeight || 0) * validatorCoefficient;
   
-  // Initialize strategy weights map (exact replica of SDK logic)
-  for (const strategy of strategies) {
-    strategyWeightsMap.set(strategy.id, {
-      id: strategy.id,
-      tokenWeights: []
+  return tokenTotal + delegatedTotal;
+};
+
+/**
+ * Helper function to calculate weighted ratio sum for harmonic mean
+ * This is sum of (coefficient / amount) for tokens + (validatorCoeff / delegatedBalance)
+ */
+const calculateWeightedRatioSum = (
+  strategy: StrategyTokenWeight,
+  coefficients: TokenCoefficient[],
+  validatorCoefficient: number
+): number => {
+  // Calculate token ratios
+  const tokenRatioSum = coefficients.reduce((sum, coeff) => {
+    const tokenData = strategy.tokens[coeff.token];
+    if (tokenData && tokenData.amount && parseFloat(tokenData.amount) > 0) {
+      return sum + (coeff.coefficient / parseFloat(tokenData.amount));
+    }
+    return sum;
+  }, 0);
+  
+  // Calculate delegated balance ratio
+  const delegatedRatio = (strategy.validatorBalanceWeight || 0) > 0 
+    ? validatorCoefficient / (strategy.validatorBalanceWeight || 1)
+    : 0;
+  
+  return tokenRatioSum + delegatedRatio;
+};
+
+/**
+ * Helper function to calculate weighted products for geometric mean using logarithms for numerical stability
+ * This calculates log(product) = sum(coefficient * log(amount)) + validatorCoeff * log(delegatedBalance)
+ */
+const calculateWeightedLogSum = (
+  strategy: StrategyTokenWeight,
+  coefficients: TokenCoefficient[],
+  validatorCoefficient: number
+): number => {
+  let logSum = 0;
+  let hasValidTokens = false;
+  
+  // Calculate token contribution using logarithms
+  for (const coeff of coefficients) {
+    const tokenData = strategy.tokens[coeff.token];
+    
+    if (tokenData && tokenData.amount && parseFloat(tokenData.amount) > 0) {
+      const amount = parseFloat(tokenData.amount);
+      const logContribution = coeff.coefficient * Math.log(amount);
+      logSum += logContribution;
+      hasValidTokens = true;
+    } else {
+      // If coefficient > 0 but token is missing/0, the entire product should be 0
+      if (coeff.coefficient > 0) {
+        return -Infinity; // log(0) = -Infinity, which will give us 0 when we exp() it
+      }
+      // If coefficient is 0, token doesn't contribute (log(amount^0) = log(1) = 0)
+    }
+  }
+  
+  // Calculate delegated balance contribution using logarithms
+  const delegatedBalance = strategy.validatorBalanceWeight || 0;
+  
+  if (validatorCoefficient > 0) {
+    if (delegatedBalance > 0) {
+      const delegatedLogContribution = validatorCoefficient * Math.log(delegatedBalance);
+      logSum += delegatedLogContribution;
+    } else {
+      // No delegated balance but positive coefficient - result should be 0
+      return -Infinity;
+    }
+  }
+  // validatorCoefficient is 0, so delegatedBalance^0 = 1, log(1) = 0 (no contribution)
+  
+  return logSum;
+};
+
+/**
+ * Helper function to calculate weighted products for geometric mean
+ * This is product of (amount^coefficient) for tokens * (delegatedBalance^validatorCoeff)
+ */
+const calculateWeightedProducts = (
+  strategy: StrategyTokenWeight,
+  coefficients: TokenCoefficient[],
+  validatorCoefficient: number
+): number => {
+  // Use logarithmic calculation for numerical stability
+  const logSum = calculateWeightedLogSum(strategy, coefficients, validatorCoefficient);
+  
+  if (logSum === -Infinity) {
+    return 0;
+  }
+  
+  // Convert back from log space, but check for overflow
+  const result = Math.exp(logSum);
+  
+  // Handle potential overflow/underflow
+  if (!isFinite(result)) {
+    return logSum > 0 ? Number.MAX_SAFE_INTEGER : Number.MIN_VALUE;
+  }
+  
+  return result;
+};
+
+/**
+ * Calculate strategy weights using arithmetic weighted average
+ */
+export const calcArithmeticStrategyWeights = (
+  strategyTokenWeights: StrategyTokenWeight[],
+  { coefficients, validatorCoefficient = 0 }: WeightCalculationOptions,
+): Map<string, number> => {
+  const strategyWeights = strategyTokenWeights.reduce((weightMap, strategy) => {
+    const totalCoefficient = calculateCoefficientsSum(coefficients) + validatorCoefficient;
+    const totalWeight = calculateWeightTotals(strategy, coefficients, validatorCoefficient);
+    const finalWeight = totalCoefficient > 0 ? totalWeight / totalCoefficient : 0;
+    return weightMap.set(strategy.strategy.toString(), finalWeight);
+  }, new Map<string, number>());
+
+  return strategyWeights;
+};
+
+/**
+ * Calculate strategy weights using harmonic weighted average
+ */
+export const calcHarmonicStrategyWeights = (
+  strategyTokenWeights: StrategyTokenWeight[],
+  { coefficients, validatorCoefficient = 0 }: WeightCalculationOptions,
+): Map<string, number> => {
+  // the numerator of weighted harmonic is the sum of all weights (coefficients)
+  const coeffSum = calculateCoefficientsSum(coefficients) + validatorCoefficient;
+
+  const unnormalizedWeights = strategyTokenWeights.reduce((weightMap, strategy) => {
+    // the denominator of weighted harmonic is the sum of all ratios between the value and its related weight (coefficient)
+    const denom = calculateWeightedRatioSum(strategy, coefficients, validatorCoefficient);
+    // if the denominator is 0, we should not calculate division, the entire weight is zero
+    const finalWeight = denom != 0 ? coeffSum / denom : 0;
+    return weightMap.set(strategy.strategy.toString(), finalWeight);
+  }, new Map<string, number>());
+
+  // Calculate sum for normalization
+  const weightSum = Array.from(unnormalizedWeights.values()).reduce(
+    (sum, weight) => sum + weight,
+    0,
+  );
+
+  // Normalize weights to sum to 1
+  const normalizedWeights = new Map<string, number>();
+  for (const [id, weight] of unnormalizedWeights.entries()) {
+    const normalizedWeight = weightSum > 0 ? weight / weightSum : 0;
+    normalizedWeights.set(id, normalizedWeight);
+  }
+
+  return normalizedWeights;
+};
+
+/**
+ * Calculate strategy weights using geometric weighted average
+ */
+export const calcGeometricStrategyWeights = (
+  strategyTokenWeights: StrategyTokenWeight[],
+  { coefficients, validatorCoefficient = 0 }: WeightCalculationOptions,
+): Map<string, number> => {
+  const totalCoefficient = calculateCoefficientsSum(coefficients) + validatorCoefficient;
+  
+  // Use logarithmic calculations throughout for numerical stability
+  const logWeights: Array<{ id: string; logWeight: number }> = [];
+  
+  for (const strategy of strategyTokenWeights) {
+    
+    // Get the log sum directly for numerical stability
+    const logSum = calculateWeightedLogSum(strategy, coefficients, validatorCoefficient);
+    
+    // Calculate log of nth root: log(x^(1/n)) = log(x)/n
+    const logWeight = totalCoefficient > 0 && logSum !== -Infinity 
+      ? logSum / totalCoefficient 
+      : -Infinity;
+      
+    logWeights.push({
+      id: strategy.strategy.toString(),
+      logWeight
     });
-    
-    const tokenRisks = new Map<string, number>();
-    
-    // Calculate token risks for this strategy (replicated from SDK)
-    for (const tokenWeight of strategy.tokenWeights) {
-      const token = tokenWeight.token.toLowerCase();
-      const currentRisk = tokenRisks.get(token) ?? 0;
-      // Use weight as percentage (converting to same format as SDK: percentage / 10000)
-      tokenRisks.set(token, currentRisk + Number(tokenWeight.weight) / 10000);
+  }
+
+  // Convert back to regular weights and calculate normalization in log space
+  const validLogWeights = logWeights.filter(w => w.logWeight !== -Infinity);
+  
+  if (validLogWeights.length === 0) {
+    const result = new Map<string, number>();
+    for (const { id } of logWeights) {
+      result.set(id, 0);
     }
-    
-    // Store risks by token and strategy (exact replica)
-    for (const [token, risk] of tokenRisks) {
-      if (!riskByTokenAndStrategy.has(token)) {
-        riskByTokenAndStrategy.set(token, new Map());
-      }
-      riskByTokenAndStrategy.get(token)!.set(strategy.id, risk);
-    }
+    return result;
   }
   
-  // Calculate weights for each token (exact replica of SDK logic)
-  for (const tokenConfig of tokenConfigs) {
-    const token = tokenConfig.token;
-    const tokenLower = token.toLowerCase();
-    const beta = Number(tokenConfig.sharedRiskLevel) / 10000; // Convert to decimal (exact replica)
-    const totalObligatedBalance = BigInt(tokenConfig.totalObligatedBalance);
-    
-    if (totalObligatedBalance === 0n) continue;
-    
-    let normalizationDenominator = 0;
-    const tempWeights: { strategyId: string | number; weight: number }[] = [];
-    
-    for (const strategy of strategies) {
-      const strategyId = strategy.id;
-      
-      // Find the token weight for this strategy (replicated logic)
-      const tokenWeight = strategy.tokenWeights.find(
-        (tw) => tw.token.toLowerCase() === tokenLower
-      );
-      
-      if (!tokenWeight) continue;
-      
-      // Use depositAmount as obligatedBalance (replicated logic)
-      if (!tokenWeight.depositAmount) continue;
-      
-      const obligatedBalance = BigInt(tokenWeight.depositAmount);
-      const risk = Math.max(1, riskByTokenAndStrategy.get(tokenLower)?.get(strategyId) ?? 0);
-      
-      // Calculate exponential term and weight (exact replica)
-      const exponentialTerm = Math.exp(-beta * risk);
-      const term = Number(obligatedBalance) / Number(totalObligatedBalance) * exponentialTerm;
-      
-      normalizationDenominator += term;
-      tempWeights.push({
-        strategyId,
-        weight: term
-      });
-    }
-    
-    // Normalize weights (exact replica)
-    const cToken = normalizationDenominator === 0 ? 0 : 1 / normalizationDenominator;
-    
-    for (const { strategyId, weight } of tempWeights) {
-      const strategyWeight = strategyWeightsMap.get(strategyId);
-      if (strategyWeight) {
-        strategyWeight.tokenWeights.push({
-          token,
-          weight: weight * cToken
-        });
-      }
-    }
+  // For numerical stability, subtract the maximum log weight before exponentiating
+  const maxLogWeight = Math.max(...validLogWeights.map(w => w.logWeight));
+  
+  const adjustedWeights = logWeights.map(({ id, logWeight }) => ({
+    id,
+    weight: logWeight === -Infinity ? 0 : Math.exp(logWeight - maxLogWeight)
+  }));
+  
+  // Calculate sum for normalization
+  const weightSum = adjustedWeights.reduce((sum, { weight }) => sum + weight, 0);
+
+  // Normalize weights to sum to 1
+  const normalizedWeights = new Map<string, number>();
+  for (const { id, weight } of adjustedWeights) {
+    const normalizedWeight = weightSum > 0 ? weight / weightSum : 0;
+    normalizedWeights.set(id, normalizedWeight);
+  }
+
+  return normalizedWeights;
+};
+
+/**
+ * Calculate strategy weights for simulation using the same algorithms as the SDK
+ * Now matches the SDK interface exactly
+ */
+export const calculateSimulationWeights = (
+  strategyTokenWeights: StrategyTokenWeight[],
+  options: WeightCalculationOptions,
+  calculationType: 'arithmetic' | 'geometric' | 'harmonic'
+): Map<string, number> => {
+  
+  if (!strategyTokenWeights?.length) {
+    return new Map();
+  }
+
+  let result: Map<string, number>;
+  
+  switch (calculationType) {
+    case 'geometric':
+      result = calcGeometricStrategyWeights(strategyTokenWeights, options);
+      break;
+    case 'harmonic':
+      result = calcHarmonicStrategyWeights(strategyTokenWeights, options);
+      break;
+    case 'arithmetic':
+    default:
+      result = calcArithmeticStrategyWeights(strategyTokenWeights, options);
+      break;
   }
   
-  // Calculate validator balance weights (exact replica of SDK logic)
-  const validatorBalances = new Map<string | number, number>();
-  let totalBAppBalance = 0;
-  
-  // In simulation, we use the user-provided validatorBalanceWeight values
-  // as the "delegated balance" equivalent
-  for (const strategy of strategies) {
-    const validatorBalance = strategy.validatorBalanceWeight || 0;
-    validatorBalances.set(strategy.id, validatorBalance);
-    totalBAppBalance += validatorBalance;
-  }
-  
-  // Set validator balance weights (exact replica)
-  for (const [strategyId, validatorBalance] of validatorBalances.entries()) {
-    const strategyWeight = strategyWeightsMap.get(strategyId);
-    if (strategyWeight && totalBAppBalance > 0) {
-      strategyWeight.validatorBalanceWeight = Number(validatorBalance) / Number(totalBAppBalance);
-    }
-  }
-  
-  return Array.from(strategyWeightsMap.values());
+  return result;
 };
 
 /**
@@ -188,4 +350,53 @@ export const convertUIStrategiesToSimulation = (uiStrategies: UIStrategy[]): Sim
     })),
     validatorBalanceWeight: strategy.validatorBalanceWeight || 0
   }));
+};
+
+/**
+ * Convert UI strategies to StrategyTokenWeight format for the calculation functions
+ * This includes both token data and delegated balance data
+ */
+export const convertUIStrategiesToStrategyTokenWeight = (
+  uiStrategies: UIStrategy[],
+  delegatedBalances?: any
+): StrategyTokenWeight[] => {
+  return uiStrategies.map(strategy => {
+    const strategyId = Number(strategy.id || strategy.strategy || 0);
+    
+    // Build tokens object from tokenWeights
+    const tokens: { [key: string]: { amount: string; obligatedPercentage: number } } = {};
+    strategy.tokenWeights.forEach(tw => {
+      if (tw.token && tw.depositAmount) {
+        // Convert from wei to ether for the calculation
+        const amountInEther = tw.depositAmount ? 
+          parseFloat(tw.depositAmount) / Math.pow(10, 18) : 0;
+        
+        tokens[tw.token] = {
+          amount: amountInEther.toString(),
+          obligatedPercentage: tw.weight || 0
+        };
+      }
+    });
+    
+    // Get delegated balance for this strategy
+    let validatorBalanceWeight = strategy.validatorBalanceWeight || 0;
+    
+    // If we have delegated balances data, use it
+    if (delegatedBalances?.bAppTotalDelegatedBalances) {
+      const delegatedBalance = delegatedBalances.bAppTotalDelegatedBalances.find(
+        (balance: any) => balance.strategyId === strategyId.toString()
+      );
+      
+      if (delegatedBalance?.delegation) {
+        // Convert from wei to ether
+        validatorBalanceWeight = parseFloat(delegatedBalance.delegation) / Math.pow(10, 18);
+      }
+    }
+    
+    return {
+      strategy: strategyId,
+      tokens,
+      validatorBalanceWeight
+    };
+  });
 }; 

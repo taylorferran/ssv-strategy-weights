@@ -20,18 +20,21 @@ const walletClient = createWalletClient({
 });
 
 const sdk = new BasedAppsSDK({
-  beaconchainUrl: "https://eth-beacon-chain-hoodi.drpc.org/rest/",
+  beaconchainUrl: "https://ethereum-hoodi-beacon-api.publicnode.com",
   publicClient,
   walletClient,
-  _: {
-      subgraphUrl: "https://api.studio.thegraph.com/query/71118/ssv-network-hoodi/version/latest",
-    },
+  extendedConfig: {
+   subgraph: {
+    //url: "https://api.studio.thegraph.com/query/71118/ssv-network-hoodi/version/latest",
+     apiKey: "6815e91a3ebffff4748fcc3ab91cf5fa"
+   }
+ }
 })
 
 export const getParticipantWeights = async (bAppId: string): Promise<StrategyTokenWeight[]> => {
   try {
-    const weights = await sdk.api.getParticipantWeights({ bAppId });
-    console.log("WEIGHTS:::::", weights);
+    const weights = await sdk.api.getParticipantWeights({ bAppId: bAppId as `0x${string}` });
+    console.log("SDK returned weights:", weights?.length || 0, "strategies");
     return weights as unknown as StrategyTokenWeight[];
   } catch (error) {
     console.error("Error fetching participant weights:", error);
@@ -41,10 +44,20 @@ export const getParticipantWeights = async (bAppId: string): Promise<StrategyTok
 
 export const getDepositedBalancesForStrategy = async (strategyId: string) => {
   try {
-    const deposits = await sdk.api.getDepositedBalancesForStrategy({ strategyId });
+    const deposits = await sdk.api.getDepositedBalancesForStrategy({ strategyId: strategyId as `0x${string}` });
     return deposits;
   } catch (error) {
     console.error(`Error fetching deposited balances for strategy ${strategyId}:`, error);
+    return null;
+  }
+};
+
+export const getDelegatedBalances = async (bAppId: string) => {
+  try {
+    const delegatedBalances = await sdk.api.getDelegatedBalances({ bAppId: bAppId as `0x${string}` });
+    return delegatedBalances;
+  } catch (error) {
+    console.error(`Error fetching delegated balances for BApp ${bAppId}:`, error);
     return null;
   }
 };
@@ -55,39 +68,14 @@ export const calculateStrategyWeights = (
   calculationType: 'arithmetic' | 'geometric' | 'harmonic'
 ): Map<string, number> => {
   try {
-    // Enhanced debug logging
-    console.log(`🔍 [SDK] calculateStrategyWeights called with:`, {
-      calculationType,
-      validatorCoefficient: options.validatorCoefficient,
-      coefficientsCount: options.coefficients?.length || 0,
-      strategyCount: strategyTokenWeights?.length || 0
-    });
+    console.log(`🔍 [SDK] Calculating ${calculationType} weights for ${strategyTokenWeights?.length || 0} strategies`);
     
-    // Log detailed strategy analysis
-    strategyTokenWeights?.forEach((strategy, idx) => {
-      const tokenCount = Object.keys(strategy.tokens || {}).length;
-      const tokenWeights = Object.entries(strategy.tokens || {}).map(([token, data]) => ({
-        token: token.slice(0, 10) + '...',
-        amount: data.amount,
-        obligatedPercentage: data.obligatedPercentage
-      }));
-      
-      console.log(`🔍 [SDK] Strategy ${idx + 1} (ID: ${strategy.strategy}):`, {
-        tokenCount,
-        tokenWeights,
-        hasValidatorBalance: strategy.validatorBalanceWeight !== undefined
-      });
-    });
-    
-    // Log coefficients
-    console.log(`🔍 [SDK] Token coefficients:`, options.coefficients?.map(c => ({
-      token: c.token.slice(0, 10) + '...',
-      coefficient: c.coefficient
-    })));
+    if (!strategyTokenWeights?.length) {
+      console.log('🔍 [SDK] No strategies to calculate');
+      return new Map();
+    }
     
     let result: Map<string, number>;
-    
-    console.log(`🔍 [SDK] Calling ${calculationType} calculation...`);
     
     switch (calculationType) {
       case 'geometric':
@@ -102,41 +90,10 @@ export const calculateStrategyWeights = (
         break;
     }
     
-    console.log(`🔍 [SDK] ${calculationType} calculation completed`);
-    console.log(`🔍 [SDK] Result type:`, typeof result);
-    console.log(`🔍 [SDK] Result is Map:`, result instanceof Map);
-    console.log(`🔍 [SDK] Result size:`, result?.size || 'undefined');
-    console.log(`🔍 [SDK] Result entries:`, result ? Array.from(result.entries()) : 'no entries');
-    console.log(`🔍 [SDK] Result values:`, result ? Array.from(result.values()) : 'no values');
-    
-    // Check for empty or invalid results
-    if (!result || result.size === 0) {
-      console.warn(`🔍 [SDK] Empty result from ${calculationType} calculation!`);
-      return new Map();
-    }
-    
-    // Check for NaN or invalid values
-    const hasInvalidValues = Array.from(result.values()).some(value => 
-      isNaN(value) || !isFinite(value) || value < 0
-    );
-    
-    if (hasInvalidValues) {
-      console.warn(`🔍 [SDK] Invalid values detected in ${calculationType} result:`, 
-        Array.from(result.entries()).filter(([_, value]) => 
-          isNaN(value) || !isFinite(value) || value < 0
-        )
-      );
-    }
-    
+    console.log(`🔍 [SDK] Successfully calculated weights for ${result?.size || 0} strategies`);
     return result;
-  } catch (error) {
-    console.error(`🔍 [SDK] Error in calculateStrategyWeights (${calculationType}):`, error);
-    console.error(`🔍 [SDK] Error stack:`, error.stack);
-    console.error(`🔍 [SDK] Input data that caused error:`, {
-      strategyTokenWeights,
-      options,
-      calculationType
-    });
+  } catch (error: any) {
+    console.error(`🚨 [SDK] Error in calculateStrategyWeights (${calculationType}):`, error.message);
     return new Map();
   }
 };

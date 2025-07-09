@@ -1,12 +1,17 @@
+import React from 'react';
 import {
   Box,
   Text,
   Badge,
   VStack,
   HStack,
-  Card,
-  CardBody,
-  SimpleGrid,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  TableContainer,
   Divider,
   Flex,
   Spacer,
@@ -20,29 +25,25 @@ import {
   NumberIncrementStepper,
   NumberDecrementStepper,
   useToast,
+  Heading,
 } from '@chakra-ui/react';
-import { AddIcon, DeleteIcon, EditIcon } from '@chakra-ui/icons';
+import { DeleteIcon } from '@chakra-ui/icons';
 import { formatEther, parseEther } from 'viem';
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 
 interface StrategyListProps {
   strategies: any[];
   deposits?: Map<string, any>;
+  delegatedBalances?: any;
   editable?: boolean;
   onStrategiesChange?: (strategies: any[]) => void;
+  onDelegatedBalanceChange?: (strategyId: string, newBalance: string) => void;
   isSimulation?: boolean;
+  weights?: Map<string, number>;
+  tokenCoefficients?: any[];
 }
 
-const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChange, isSimulation = false }: StrategyListProps) => {
-  // Debug logging (can be removed later)
-  console.log('🔍 [StrategyList] Component rendered with:', {
-    strategiesLength: strategies?.length || 0,
-    depositsSize: deposits?.size || 0,
-    editable,
-    hasOnStrategiesChange: !!onStrategiesChange,
-    firstStrategy: strategies?.[0] || null
-  });
-  
+const StrategyList = ({ strategies, deposits, delegatedBalances, editable = false, onStrategiesChange, onDelegatedBalanceChange, isSimulation = false, weights, tokenCoefficients = [] }: StrategyListProps) => {
   const hasRows = strategies && strategies.length > 0;
   const toast = useToast();
   
@@ -52,66 +53,117 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
   // Helper function to get deposit amount for a token in a strategy
   const getDepositAmount = (strategy: any, tokenAddress: string): string => {
     try {
-      console.log('🔍 [getDepositAmount] Called with:', { strategyId: strategy.id || strategy.strategy, tokenAddress });
-      
       // First try to get from the strategy's tokenWeight (for simulation/edited data)
       const tokenWeight = strategy.tokenWeights?.find((tw: any) => 
         tw.token.toLowerCase() === tokenAddress.toLowerCase()
       );
       
-      if (tokenWeight?.depositAmount && tokenWeight.depositAmount !== "0") {
-        console.log('🔍 [getDepositAmount] Using tokenWeight.depositAmount:', tokenWeight.depositAmount);
+      // If found in tokenWeights, always use that value (including "0")
+      if (tokenWeight?.depositAmount !== undefined) {
         return tokenWeight.depositAmount;
       }
       
-      // If not found or is zero, try to get from deposits data (for initial API data)
+      // Only fall back to other sources if not found in tokenWeights at all
       const strategyId = (strategy.id || strategy.strategy)?.toString();
       
       if (strategyId && deposits?.has(strategyId)) {
         const strategyDeposits = deposits.get(strategyId);
-        console.log('🔍 [getDepositAmount] Found strategyDeposits:', strategyDeposits);
         
         const deposit = strategyDeposits?.deposits?.find((dep: any) => 
           dep.token.toLowerCase() === tokenAddress.toLowerCase()
         );
-        console.log('🔍 [getDepositAmount] Found deposit:', deposit);
         
-        // SDK returns depositAmount field, not amount
-        if (deposit?.depositAmount) {
-          console.log('🔍 [getDepositAmount] Using deposit.depositAmount:', deposit.depositAmount);
-          return deposit.depositAmount;
-        }
+        // Sum all deposits for this token in this strategy
+        const matchingDeposits = strategyDeposits.deposits.filter((dep: any) => 
+          dep.token.toLowerCase() === tokenAddress.toLowerCase()
+        );
         
-        // Fallback to amount field if depositAmount doesn't exist
-        if (deposit?.amount) {
-          console.log('🔍 [getDepositAmount] Using deposit.amount:', deposit.amount);
-          return deposit.amount;
+        if (matchingDeposits.length > 0) {
+          // Sum all deposit amounts for this token
+          let totalDepositAmount = BigInt(0);
+          
+          for (const dep of matchingDeposits) {
+            if (dep.depositAmount && dep.depositAmount !== "0") {
+              totalDepositAmount += BigInt(dep.depositAmount);
+            }
+          }
+          
+          const totalDepositString = totalDepositAmount.toString();
+          return totalDepositString;
         }
       }
       
       // Finally, try to get from the original API data structure (for calculator tab)
       if (strategy.tokens && strategy.tokens[tokenAddress]) {
         const amount = strategy.tokens[tokenAddress].amount || "0";
-        console.log('🔍 [getDepositAmount] Using strategy.tokens amount:', amount);
         return amount;
       }
       
-      console.log('🔍 [getDepositAmount] Returning default 0');
       return "0";
     } catch (error) {
-      console.error('🔍 [getDepositAmount] Error:', error);
+      console.error('Error in getDepositAmount:', error);
       return "0";
     }
   };
 
-  // Test getDepositAmount for first strategy and token if available
-  if (strategies?.length > 0 && strategies[0]?.tokenWeights?.length > 0) {
-    const testStrategy = strategies[0];
-    const testToken = testStrategy.tokenWeights[0].token;
-    console.log('🔍 [StrategyList] Testing getDepositAmount for:', { testStrategy, testToken });
-    const testAmount = getDepositAmount(testStrategy, testToken);
-    console.log('🔍 [StrategyList] Test deposit amount result:', testAmount);
-  }
+  // Helper function to get token symbol or short address
+  const getTokenDisplay = (tokenAddress: string) => {
+    if (tokenAddress === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") {
+      return "ETH";
+    }
+    if (tokenAddress === "0x9f5d4ec84fc4785788ab44f9de973cf34f7a038e") {
+      return "SSV";
+    }
+    return `${tokenAddress.slice(0, 6)}...${tokenAddress.slice(-4)}`;
+  };
+
+  // Helper function to get delegated balance for a strategy
+  const getDelegatedBalance = (strategy: any): string => {
+    try {
+      if (!delegatedBalances?.bAppTotalDelegatedBalances) {
+        return "0";
+      }
+      
+      const strategyId = (strategy.id || strategy.strategy)?.toString();
+      const delegatedBalance = delegatedBalances.bAppTotalDelegatedBalances.find(
+        (balance: any) => balance.strategyId === strategyId
+      );
+      
+      if (delegatedBalance?.delegation) {
+        return formatEther(BigInt(delegatedBalance.delegation));
+      }
+      
+      return "0";
+    } catch (error) {
+      console.error('Error getting delegated balance:', error);
+      return "0";
+    }
+  };
+
+  // Helper function to get calculated weight for a strategy as percentage
+  // Uses the exact same logic as WeightDisplay component
+  const getCalculatedWeight = (strategy: any): string => {
+    if (!weights) {
+      return "N/A";
+    }
+    
+    const strategyId = (strategy.id || strategy.strategy)?.toString();
+    const weight = weights.get(strategyId);
+    
+    if (weight !== undefined) {
+      // Calculate total weight for normalization (same as WeightDisplay)
+      const totalWeight = Array.from(weights.values()).reduce((sum, w) => sum + w, 0);
+      
+      // Normalize to percentage (same as WeightDisplay)
+      const normalizedWeight = totalWeight > 0 ? (weight / totalWeight) * 100 : 0;
+      
+      return `${normalizedWeight.toFixed(2)}%`;
+    }
+    
+    return "0.00%";
+  };
+
+
 
   // Helper functions for editing
   const handleAddStrategy = () => {
@@ -121,17 +173,27 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
     const randomNumber = Math.floor(Math.random() * 101); // 0-100 inclusive
     const simulatedId = `S${randomNumber}`;
     
+    // Create token weights based on current token coefficients
+    const tokenWeights = tokenCoefficients.map((tokenCoeff: any) => ({
+      token: tokenCoeff.token,
+      weight: 0,
+      depositAmount: "0" // Start with 0 tokens
+    }));
+    
+    // If no token coefficients configured, add a default token
+    if (tokenWeights.length === 0) {
+      tokenWeights.push({
+        token: "0x9f5d4ec84fc4785788ab44f9de973cf34f7a038e", // Default to SSV if no config
+        weight: 0,
+        depositAmount: "0"
+      });
+    }
+    
     const newStrategy = {
       id: simulatedId,
       strategy: simulatedId, // Also set strategy field for compatibility
-      tokenWeights: [
-        {
-          token: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // ETH
-          weight: 100,
-          depositAmount: parseEther("1.0").toString() // Default to 1 ETH
-        }
-      ],
-      validatorBalanceWeight: 100 // Default validator balance
+      tokenWeights,
+      validatorBalanceWeight: 0 // Start with 0 validator balance
     };
     
     onStrategiesChange([...strategies, newStrategy]);
@@ -166,99 +228,103 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
     onStrategiesChange(updatedStrategies);
   };
 
-  const handleAddToken = (strategyIndex: number) => {
+
+
+  const handleRemoveToken = (strategyIndex: number, tokenIndex: number) => {
     if (!onStrategiesChange) return;
     
-    console.log('🚀 [DEBUG-ADD-TOKEN] Adding token to strategy', strategyIndex);
-    console.log('🚀 [DEBUG-ADD-TOKEN] Current strategies before add:', strategies);
-    console.log('🚀 [DEBUG-ADD-TOKEN] Target strategy before add:', strategies[strategyIndex]);
-    console.log('🚀 [DEBUG-ADD-TOKEN] Current token count:', strategies[strategyIndex].tokenWeights.length);
-    
     const updatedStrategies = [...strategies];
-    const newToken = {
-      token: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", // Default to ETH
-      weight: 0,
-      depositAmount: parseEther("1.0").toString() // Default to 1 ETH in wei
-    };
-    
-    console.log('🚀 [DEBUG-ADD-TOKEN] New token being added:', newToken);
-    console.log('🚀 [DEBUG-ADD-TOKEN] Deposit amount in wei:', newToken.depositAmount);
-    console.log('🚀 [DEBUG-ADD-TOKEN] Deposit amount in ETH:', formatEther(BigInt(newToken.depositAmount)));
-    
-    updatedStrategies[strategyIndex].tokenWeights.push(newToken);
-    
-    console.log('🚀 [DEBUG-ADD-TOKEN] Updated strategy after token add:', updatedStrategies[strategyIndex]);
-    console.log('🚀 [DEBUG-ADD-TOKEN] New token count:', updatedStrategies[strategyIndex].tokenWeights.length);
-    console.log('🚀 [DEBUG-ADD-TOKEN] All token weights:', updatedStrategies[strategyIndex].tokenWeights);
-    console.log('🚀 [DEBUG-ADD-TOKEN] All updated strategies:', updatedStrategies);
-    
-    console.log('🚀 [DEBUG-ADD-TOKEN] Calling onStrategiesChange...');
+    updatedStrategies[strategyIndex].tokenWeights.splice(tokenIndex, 1);
     onStrategiesChange(updatedStrategies);
     
     toast({
-      title: "Token Added",
-      description: "New token has been added to the strategy",
+      title: "Token Removed",
+      description: "Token has been removed from the strategy",
+      status: "info",
+      duration: 2000,
+      isClosable: true,
+    });
+  };
+
+  const handleResetStrategy = (strategyIndex: number) => {
+    if (!onStrategiesChange) return;
+    
+    const strategy = strategies[strategyIndex];
+    const strategyId = (strategy.id || strategy.strategy)?.toString();
+    
+    // Reset all token depositAmount values to "0"
+    const updatedStrategies = [...strategies];
+    updatedStrategies[strategyIndex].tokenWeights = updatedStrategies[strategyIndex].tokenWeights.map((tw: any) => ({
+      ...tw,
+      depositAmount: "0"
+    }));
+    
+    // Also reset validator balance weight if it exists
+    if (updatedStrategies[strategyIndex].validatorBalanceWeight !== undefined) {
+      updatedStrategies[strategyIndex].validatorBalanceWeight = 0;
+    }
+    
+    // Clear any editing values for this strategy
+    setEditingValues(prev => {
+      const newState = { ...prev };
+      // Clear all editing values for this strategy's tokens and delegated balance
+      Object.keys(newState).forEach(key => {
+        if (key.startsWith(`${strategyId}-`) || key === `delegated-${strategyId}`) {
+          delete newState[key];
+        }
+      });
+      return newState;
+    });
+    
+    // Update the strategies
+    onStrategiesChange(updatedStrategies);
+    
+    // Also reset the delegated balance if the callback is available
+    if (onDelegatedBalanceChange && strategyId) {
+      onDelegatedBalanceChange(strategyId, "0");
+    }
+    
+    toast({
+      title: "Strategy Reset",
+      description: "All token amounts and delegated balance reset to 0 for this strategy",
       status: "success",
       duration: 2000,
       isClosable: true,
     });
   };
 
-  const handleRemoveToken = (strategyIndex: number, tokenIndex: number) => {
-    if (!onStrategiesChange) return;
-    
-    const updatedStrategies = [...strategies];
-    updatedStrategies[strategyIndex].tokenWeights = updatedStrategies[strategyIndex].tokenWeights.filter((_: any, index: number) => index !== tokenIndex);
-    onStrategiesChange(updatedStrategies);
-  };
-
   const handleUpdateTokenWeight = (strategyIndex: number, tokenIndex: number, field: 'weight' | 'depositAmount', value: any) => {
     if (!onStrategiesChange) return;
     
-    console.log('🔍 [handleUpdateTokenWeight] Called with:', { strategyIndex, tokenIndex, field, value });
-    
     const updatedStrategies = [...strategies];
-    const oldValue = updatedStrategies[strategyIndex].tokenWeights[tokenIndex][field];
     updatedStrategies[strategyIndex].tokenWeights[tokenIndex][field] = value;
-    
-    console.log('🔍 [handleUpdateTokenWeight] Updated:', { oldValue, newValue: value });
-    console.log('🔍 [handleUpdateTokenWeight] Updated token weight:', updatedStrategies[strategyIndex].tokenWeights[tokenIndex]);
-    
     onStrategiesChange(updatedStrategies);
   };
 
+  // Show error state if no strategies but not in a loading state
   if (!hasRows) {
     return (
-      <Box textAlign="center" py={12}>
-        <Text color="gray.400" fontSize="lg" mb={4}>
-          No strategies found for this BApp ID
-        </Text>
-        {editable && (
-          <Button
-            leftIcon={<AddIcon />}
-            colorScheme="ssv"
-            variant="outline"
-            size="md"
-            onClick={handleAddStrategy}
-            mb={4}
-          >
-            Add New Strategy
-          </Button>
-        )}
-        <Box bg="gray.50" borderRadius="xl" p={4} mt={6}>
-          <Code display="block" whiteSpace="pre" fontSize="xs" color="gray.600">
+      <Box textAlign="center" py={8}>
+        <VStack spacing={4}>
+          <Text fontSize="lg" color="gray.500">
+            {isSimulation ? "No simulation strategies configured" : "No active strategies found"}
+          </Text>
+          <Text fontSize="sm" color="gray.400">
+            {isSimulation ? "Add strategies to run simulations" : "Strategies will appear here when loaded from the BApp"}
+          </Text>
+          {/* Debug info */}
+          <Code fontSize="xs" p={2} borderRadius="md" bg="gray.100">
             {JSON.stringify(strategies, null, 2)}
           </Code>
-        </Box>
+        </VStack>
       </Box>
     );
   }
 
   return (
-    <Box maxH="500px" overflowY="auto" px={2}>
+    <Box maxH="600px" overflowY="auto">
       {editable && (
         <Button
-          leftIcon={<AddIcon />}
           colorScheme="ssv"
           variant="outline"
           size="sm"
@@ -268,131 +334,210 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
           Add New Strategy
         </Button>
       )}
-      <VStack spacing={4} align="stretch">
-        {strategies.map((strategy, sIdx) => (
-          <Card key={strategy.id || strategy.strategy || sIdx} variant="outline" borderRadius="xl" overflow="hidden">
-            <CardBody p={6}>
-              <VStack spacing={4} align="stretch">
-                {/* Strategy Header */}
-                <Flex align="center" mb={2}>
-                  <Badge 
-                    colorScheme="ssv" 
-                    fontSize="sm" 
-                    px={3} 
-                    py={1} 
-                    borderRadius="lg"
-                    fontWeight="bold"
-                  >
-                    Strategy #{strategy.id || strategy.strategy}
-                  </Badge>
-                  <Spacer />
-                  <Text fontSize="sm" color="gray.500" fontWeight="medium">
-                    {strategy.tokenWeights.length} tokens
-                  </Text>
-                  {editable && (
-                    <IconButton
-                      aria-label="Remove strategy"
-                      icon={<DeleteIcon />}
-                      size="sm"
-                      colorScheme="red"
-                      variant="ghost"
-                      onClick={() => handleRemoveStrategy(sIdx)}
-                      ml={2}
-                    />
-                  )}
-                </Flex>
-
-                {/* Validator Balance Weight */}
-                {(strategy.validatorBalanceWeight !== undefined && strategy.validatorBalanceWeight !== null) || editable ? (
-                  <Box bg="ssv.50" borderRadius="lg" p={3}>
-                    <HStack justify="space-between">
-                      <Text fontSize="sm" fontWeight="semibold" color="ssv.600">
-                        Validator Balance
-                      </Text>
-                      {editable ? (
-                        <NumberInput
-                          value={strategy.validatorBalanceWeight || 0}
-                          onChange={(_, valueAsNumber) => handleUpdateValidatorBalance(sIdx, isNaN(valueAsNumber) ? 0 : valueAsNumber)}
-                          size="sm"
-                          maxW="100px"
-                          step={0.1}
-                          precision={2}
-                          min={0}
-                        >
-                          <NumberInputField />
-                          <NumberInputStepper>
-                            <NumberIncrementStepper />
-                            <NumberDecrementStepper />
-                          </NumberInputStepper>
-                        </NumberInput>
-                      ) : (
-                        <Badge colorScheme="ssv" variant="subtle" fontSize="sm">
-                          {strategy.validatorBalanceWeight}
-                        </Badge>
-                      )}
-                    </HStack>
-                  </Box>
-                ) : null}
-
-                <Divider />
-
-                {/* Token Weights */}
-                <VStack spacing={3} align="stretch">
-                  <Text fontSize="sm" fontWeight="semibold" color="gray.600">
-                    Token Weights
-                  </Text>
-                  
-                  {strategy.tokenWeights.map((tokenWeight: any, tokenIndex: number) => (
-                    <HStack key={tokenIndex} spacing={4} align="center">
-                      <Text fontSize="sm" fontFamily="mono" minW="120px" color="gray.700">
-                        {tokenWeight.token === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" 
-                          ? "ETH" 
-                          : `${tokenWeight.token.slice(0, 6)}...${tokenWeight.token.slice(-4)}`}
-                      </Text>
+      
+      <TableContainer>
+        <Table variant="simple" size="sm">
+          <Thead>
+            <Tr bg="gray.50">
+              <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3}>Strategy ID</Th>
+              <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3}>Token</Th>
+              <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3} isNumeric>Deposit Amount</Th>
+              <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3} isNumeric>Calculated Weight</Th>
+              <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3} isNumeric>Delegated Balance</Th>
+              {editable && <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3}>Actions</Th>}
+            </Tr>
+          </Thead>
+          <Tbody>
+                                     {strategies.map((strategy, sIdx) => {
+              const strategyDelegatedBalance = getDelegatedBalance(strategy);
+              const tokenCount = strategy.tokenWeights?.length || 0;
+              
+              // Ensure every strategy has at least one row, even if no tokens
+              const tokensToRender = tokenCount > 0 ? strategy.tokenWeights : [{ token: null, weight: 0, depositAmount: "0" }];
+             
+             return (
+               <React.Fragment key={`strategy-${strategy.id || strategy.strategy}-${sIdx}`}>
+                 {tokensToRender?.map((tokenWeight: any, tokenIndex: number) => (
+                    <Tr key={`${strategy.id || strategy.strategy}-${tokenIndex}`} 
+                        _hover={{ bg: "gray.25" }}
+                        borderBottom={tokenIndex === tokensToRender.length - 1 ? "2px solid" : "1px solid"}
+                        borderColor={tokenIndex === tokensToRender.length - 1 ? "gray.200" : "gray.100"}>
                       
-                      {editable ? (
-                        <>
-                          {/* Hide weight display in simulation mode since weights are calculated dynamically */}
-                          {!isSimulation && (
-                            <VStack spacing={1} flex={1}>
-                              <Text fontSize="xs" color="gray.500">Weight</Text>
-                              <Badge colorScheme="blue" variant="subtle">
-                                {tokenWeight.weight}
-                              </Badge>
-                            </VStack>
-                          )}
-                          
-                          <VStack spacing={1} flex={1}>
-                            <Text fontSize="xs" color="gray.500">Deposit Amount (ETH)</Text>
+                      {/* Strategy ID - only show on first row */}
+                      <Td py={3} borderRight="1px solid" borderColor="gray.100">
+                        {tokenIndex === 0 && (
+                          <VStack spacing={1} align="start">
+                            <Badge colorScheme="ssv" fontSize="xs" px={2} py={1} borderRadius="md">
+                              #{strategy.id || strategy.strategy}
+                            </Badge>
+                            <Text fontSize="xs" color="gray.500">
+                              {tokenCount > 0 ? `${tokenCount} token${tokenCount !== 1 ? 's' : ''}` : 'No tokens'}
+                            </Text>
+                            {editable && (
+                              <Button
+                                size="xs"
+                                colorScheme="red"
+                                variant="outline"
+                                onClick={() => handleResetStrategy(sIdx)}
+                                fontSize="2xs"
+                                px={2}
+                                py={1}
+                                h="auto"
+                              >
+                                Reset to 0
+                              </Button>
+                            )}
+                          </VStack>
+                        )}
+                      </Td>
+                      
+                      {/* Token */}
+                      <Td py={3} borderRight="1px solid" borderColor="gray.100">
+                        <Text fontSize="sm" fontFamily="mono" fontWeight="medium" color={tokenWeight.token ? "inherit" : "gray.500"}>
+                          {tokenWeight.token ? getTokenDisplay(tokenWeight.token) : "No tokens"}
+                        </Text>
+                      </Td>
+                      
+                      
+                      {/* Deposit Amount */}
+                      <Td py={3} borderRight="1px solid" borderColor="gray.100" isNumeric>
+                        {!tokenWeight.token ? (
+                          <Text fontSize="sm" color="gray.500">-</Text>
+                        ) : editable ? (
+                          <Input
+                            key={`${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`}
+                            type="number"
+                            min="0"
+                            step="0.000001"
+                            value={(() => {
+                              const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
+                              
+                              // If we're currently editing this field, use the editing value
+                              if (editingValues[inputKey] !== undefined) {
+                                return editingValues[inputKey];
+                              }
+                              
+                              // Otherwise, use the actual data value
+                              try {
+                                const amount = getDepositAmount(strategy, tokenWeight.token);
+                                const formattedValue = formatEther(BigInt(amount || "0"));
+                                return formattedValue;
+                              } catch (error) {
+                                console.error('Error formatting deposit amount:', error);
+                                return "0";
+                              }
+                            })()}
+                            onChange={(e) => {
+                              const valueString = e.target.value;
+                              const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
+                              
+                              // Store the current editing value to allow free typing
+                              setEditingValues(prev => ({
+                                ...prev,
+                                [inputKey]: valueString
+                              }));
+                            }}
+                            onBlur={(e) => {
+                              const valueString = e.target.value;
+                              const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
+                              
+                              try {
+                                // Clear the editing state
+                                setEditingValues(prev => {
+                                  const newState = { ...prev };
+                                  delete newState[inputKey];
+                                  return newState;
+                                });
+                                
+                                // Handle empty string - set to 0
+                                if (valueString === "" || valueString === undefined) {
+                                  handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                  return;
+                                }
+                                
+                                // Convert to number and validate
+                                const numValue = Number(valueString);
+                                if (!isNaN(numValue) && numValue >= 0) {
+                                  const weiValue = parseEther(valueString).toString();
+                                  handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', weiValue);
+                                } else {
+                                  handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                }
+                              } catch (error) {
+                                console.error('Invalid value on blur:', valueString, error);
+                                handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              // Handle Enter key to commit the value
+                              if (e.key === 'Enter') {
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            onFocus={(e) => {
+                              // Select all text when focused to allow easy replacement
+                              e.target.select();
+                            }}
+                            placeholder="0.0"
+                            size="sm"
+                            maxW="120px"
+                            textAlign="right"
+                            fontSize="sm"
+                          />
+                        ) : (
+                          <Text fontSize="sm" fontWeight="medium">
+                            {(() => {
+                              try {
+                                const amount = getDepositAmount(strategy, tokenWeight.token);
+                                
+                                // Check if amount is already in readable format (contains decimal point)
+                                if (amount && amount.includes('.')) {
+                                  return parseFloat(amount).toFixed(4);
+                                }
+                                
+                                // Otherwise assume it's in wei and format it
+                                const formatted = formatEther(BigInt(amount || "0"));
+                                return formatted;
+                              } catch (error) {
+                                console.error('Error formatting deposit amount for display:', error);
+                                return "0";
+                              }
+                            })()}
+                          </Text>
+                        )}
+                      </Td>
+                      
+                      {/* Calculated Weight - only show on first row */}
+                      <Td py={3} borderRight="1px solid" borderColor="gray.100" isNumeric>
+                        {tokenIndex === 0 && (
+                          <Text fontSize="sm" fontWeight="bold">
+                            {getCalculatedWeight(strategy)}
+                          </Text>
+                        )}
+                      </Td>
+                      
+                      {/* Delegated Balance - only show on first row */}
+                      <Td py={3} borderRight="1px solid" borderColor="gray.100" isNumeric>
+                        {tokenIndex === 0 && (
+                          editable && isSimulation && onDelegatedBalanceChange ? (
                             <Input
-                              key={`${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`}
                               type="number"
                               min="0"
                               step="0.000001"
                               value={(() => {
-                                const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
+                                const inputKey = `delegated-${strategy.id || strategy.strategy}`;
                                 
                                 // If we're currently editing this field, use the editing value
                                 if (editingValues[inputKey] !== undefined) {
-                                  console.log('🔍 [Input] Using editing value:', editingValues[inputKey]);
                                   return editingValues[inputKey];
                                 }
                                 
                                 // Otherwise, use the actual data value
-                                try {
-                                  const amount = getDepositAmount(strategy, tokenWeight.token);
-                                  const ethValue = formatEther(BigInt(amount || "0"));
-                                  console.log('🔍 [Input] Using data value:', { amount, ethValue });
-                                  return ethValue;
-                                } catch (error) {
-                                  console.error('Error formatting deposit amount:', error);
-                                  return "0";
-                                }
+                                return strategyDelegatedBalance;
                               })()}
                               onChange={(e) => {
                                 const valueString = e.target.value;
-                                const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
-                                console.log('🔍 [Input] onChange triggered:', { valueString, inputKey });
+                                const inputKey = `delegated-${strategy.id || strategy.strategy}`;
                                 
                                 // Store the current editing value to allow free typing
                                 setEditingValues(prev => ({
@@ -402,8 +547,8 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                               }}
                               onBlur={(e) => {
                                 const valueString = e.target.value;
-                                const inputKey = `${strategy.id || strategy.strategy}-${tokenIndex}-${tokenWeight.token}`;
-                                console.log('🔍 [Input] onBlur triggered:', { valueString, inputKey });
+                                const inputKey = `delegated-${strategy.id || strategy.strategy}`;
+                                const strategyId = (strategy.id || strategy.strategy)?.toString();
                                 
                                 try {
                                   // Clear the editing state
@@ -415,24 +560,25 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                                   
                                   // Handle empty string - set to 0
                                   if (valueString === "" || valueString === undefined) {
-                                    console.log('🔍 [Input] Empty value on blur, setting to 0');
-                                    handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                    if (strategyId) {
+                                      onDelegatedBalanceChange(strategyId, "0");
+                                    }
                                     return;
                                   }
                                   
                                   // Convert to number and validate
                                   const numValue = Number(valueString);
-                                  if (!isNaN(numValue) && numValue >= 0) {
+                                  if (!isNaN(numValue) && numValue >= 0 && strategyId) {
                                     const weiValue = parseEther(valueString).toString();
-                                    console.log('🔍 [Input] Valid value on blur, updating with wei value:', weiValue);
-                                    handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', weiValue);
-                                  } else {
-                                    console.log('🔍 [Input] Invalid value on blur, setting to 0');
-                                    handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                    onDelegatedBalanceChange(strategyId, weiValue);
+                                  } else if (strategyId) {
+                                    onDelegatedBalanceChange(strategyId, "0");
                                   }
                                 } catch (error) {
-                                  console.error('Invalid ether value on blur:', valueString, error);
-                                  handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                  console.error('Invalid delegated balance value on blur:', valueString, error);
+                                  if (strategyId) {
+                                    onDelegatedBalanceChange(strategyId, "0");
+                                  }
                                 }
                               }}
                               onKeyDown={(e) => {
@@ -447,56 +593,58 @@ const StrategyList = ({ strategies, deposits, editable = false, onStrategiesChan
                               }}
                               placeholder="0.0"
                               size="sm"
-                              textAlign="center"
+                              maxW="120px"
+                              textAlign="right"
+                              fontSize="sm"
+                              bg="purple.50"
+                              borderColor="purple.300"
+                              _hover={{ borderColor: "purple.400" }}
+                              _focus={{ borderColor: "purple.500", bg: "white" }}
                             />
-                          </VStack>
-                        </>
-                      ) : (
-                        <>
-                          <VStack spacing={1} flex={1}>
-                            <Text fontSize="xs" color="gray.500">Weight</Text>
-                            <Badge colorScheme="blue" variant="subtle">
-                              {tokenWeight.weight}
-                            </Badge>
-                          </VStack>
-                          
-                          <VStack spacing={1} flex={1}>
-                            <Text fontSize="xs" color="gray.500">Deposit Amount</Text>
-                            <Badge colorScheme="green" variant="subtle">
-                              {(() => {
-                                try {
-                                  const amount = getDepositAmount(strategy, tokenWeight.token);
-                                  return formatEther(BigInt(amount || "0"));
-                                } catch (error) {
-                                  console.error('Error formatting deposit amount for display:', error);
-                                  return "0";
-                                }
-                              })()} ETH
-                            </Badge>
-                          </VStack>
-                        </>
+                          ) : (
+                            <Text fontSize="sm" fontWeight="bold" color="purple.600">
+                              {strategyDelegatedBalance}
+                            </Text>
+                          )
+                        )}
+                      </Td>
+                      
+                      {/* Actions */}
+                      {editable && (
+                        <Td py={3}>
+                          <HStack spacing={1}>
+                            {tokenIndex === 0 ? (
+                              // First token row: show strategy delete button
+                              <IconButton
+                                aria-label="Remove strategy"
+                                icon={<DeleteIcon />}
+                                size="xs"
+                                colorScheme="red"
+                                variant="ghost"
+                                onClick={() => handleRemoveStrategy(sIdx)}
+                              />
+                            ) : tokenWeight.token ? (
+                              // Subsequent token rows: show token delete button
+                              <IconButton
+                                aria-label="Remove token"
+                                icon={<DeleteIcon />}
+                                size="xs"
+                                colorScheme="orange"
+                                variant="ghost"
+                                onClick={() => handleRemoveToken(sIdx, tokenIndex)}
+                              />
+                            ) : null}
+                          </HStack>
+                        </Td>
                       )}
-                    </HStack>
+                    </Tr>
                   ))}
-                  
-                  {/* Add Token button - only show in config mode, not simulation mode */}
-                  {editable && !isSimulation && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      colorScheme="blue"
-                      leftIcon={<AddIcon />}
-                      onClick={() => handleAddToken(sIdx)}
-                    >
-                      Add Token
-                    </Button>
-                  )}
-                </VStack>
-              </VStack>
-            </CardBody>
-          </Card>
-        ))}
-      </VStack>
+                </React.Fragment>
+              );
+            })}
+          </Tbody>
+        </Table>
+      </TableContainer>
     </Box>
   );
 };

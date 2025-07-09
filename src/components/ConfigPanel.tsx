@@ -17,11 +17,18 @@ import {
   IconButton,
   Flex,
   Badge,
+  SimpleGrid,
+  Spinner,
+  Stat,
+  StatLabel,
+  StatNumber,
+  StatHelpText,
 } from '@chakra-ui/react';
 import { useEffect } from 'react';
 import { DeleteIcon, AddIcon } from '@chakra-ui/icons';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
+import { formatEther, parseEther } from 'viem';
 import type { BAppConfig, TokenCoefficient } from '../types';
 
 interface ConfigPanelProps {
@@ -29,10 +36,114 @@ interface ConfigPanelProps {
   onConfigChange: (config: BAppConfig) => void;
   onAddRandomStrategy: () => void;
   strategies?: any[];
+  deposits?: Map<string, any>;
+  delegatedBalances?: any;
   isSimulation?: boolean;
+  onDelegatedBalanceChange?: (strategyId: string, newBalance: string) => void;
+  isLoadingData?: boolean;
 }
 
-const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies = [], isSimulation = false }: ConfigPanelProps) => {
+const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies = [], deposits, delegatedBalances, isSimulation = false, onDelegatedBalanceChange, isLoadingData = false }: ConfigPanelProps) => {
+  // Calculate total tokens deposited by token type across all strategies
+  const calculateTokenTotals = (): { [tokenAddress: string]: string } => {
+    try {
+      const tokenTotals: { [tokenAddress: string]: bigint } = {};
+      
+      if (isSimulation) {
+        // In simulation mode, calculate totals from current user-editable data
+        strategies.forEach((strategy: any) => {
+          if (strategy.tokenWeights && strategy.tokenWeights.length > 0) {
+            strategy.tokenWeights.forEach((tw: any) => {
+              if (tw.token && tw.depositAmount && tw.depositAmount !== "0") {
+                try {
+                  if (!tokenTotals[tw.token]) {
+                    tokenTotals[tw.token] = 0n;
+                  }
+                  tokenTotals[tw.token] += BigInt(tw.depositAmount);
+                } catch (error) {
+                  console.error('Error parsing simulation token amount:', error);
+                }
+              }
+            });
+          }
+        });
+      } else {
+        // Original calculator mode logic
+        // Sum up token deposits by token type from all strategies
+        if (deposits && deposits.size > 0) {
+          for (const [_, strategyDeposits] of deposits.entries()) {
+            if (strategyDeposits?.deposits) {
+              strategyDeposits.deposits.forEach((deposit: any) => {
+                if (deposit.depositAmount || deposit.amount) {
+                  const amount = deposit.depositAmount || deposit.amount;
+                  const tokenAddress = deposit.token;
+                  
+                  if (!tokenTotals[tokenAddress]) {
+                    tokenTotals[tokenAddress] = 0n;
+                  }
+                  tokenTotals[tokenAddress] += BigInt(amount || "0");
+                }
+              });
+            }
+          }
+        }
+        
+        // Also check strategies that have tokens directly (for UI format)
+        strategies.forEach(strategy => {
+          if (strategy.tokens) {
+            Object.entries(strategy.tokens).forEach(([tokenAddress, tokenData]: [string, any]) => {
+              if (tokenData.amount && tokenData.amount !== "0") {
+                try {
+                  if (!tokenTotals[tokenAddress]) {
+                    tokenTotals[tokenAddress] = 0n;
+                  }
+                  tokenTotals[tokenAddress] += parseEther(tokenData.amount);
+                } catch (error) {
+                  console.error('Error parsing token amount:', error);
+                }
+              }
+            });
+          }
+        });
+      }
+      
+      // Convert to formatted strings
+      const formattedTotals: { [tokenAddress: string]: string } = {};
+      Object.entries(tokenTotals).forEach(([tokenAddress, total]) => {
+        formattedTotals[tokenAddress] = parseFloat(formatEther(total)).toFixed(2);
+      });
+      
+      return formattedTotals;
+    } catch (error) {
+      console.error('Error calculating token totals:', error);
+      return {};
+    }
+  };
+
+  // Helper function to get token display name
+  const getTokenDisplayName = (tokenAddress: string): string => {
+    if (tokenAddress === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee") {
+      return "ETH";
+    }
+    if (tokenAddress === "0x9f5d4ec84fc4785788ab44f9de973cf34f7a038e") {
+      return "SSV";
+    }
+    return `${tokenAddress.slice(0, 6)}...${tokenAddress.slice(-4)}`;
+  };
+
+  // Get total delegated balance for the BApp
+  const getTotalDelegatedBalance = (): string => {
+    try {
+      if (delegatedBalances?.bAppTotalDelegatedBalance) {
+        return parseFloat(formatEther(BigInt(delegatedBalances.bAppTotalDelegatedBalance))).toFixed(2);
+      }
+      return "0.00";
+    } catch (error) {
+      console.error('Error getting total delegated balance:', error);
+      return "0.00";
+    }
+  };
+
   // Get the LaTeX formula for the current calculation type
   const getFormulaLatex = (calculationType: string) => {
     switch (calculationType) {
@@ -64,43 +175,81 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
   // Extract unique tokens from strategies
   const getUniqueTokensFromStrategies = () => {
     const tokenSet = new Set<string>();
-    console.log('🔍 [ConfigPanel] Extracting tokens from strategies:', strategies);
     
-    strategies.forEach(strategy => {
-      console.log('🔍 [ConfigPanel] Processing strategy:', strategy);
-      if (strategy.tokenWeights) {
-        strategy.tokenWeights.forEach((tw: any) => {
-          console.log('🔍 [ConfigPanel] Found token:', tw.token);
-          tokenSet.add(tw.token);
-        });
+    console.log('🔍 [ConfigPanel] Processing strategies for token detection:', strategies);
+    console.log('🔍 [ConfigPanel] Number of strategies:', strategies.length);
+
+    
+    strategies.forEach((strategy, idx) => {
+      console.log(`🔍 [ConfigPanel] Strategy ${idx}:`, strategy);
+      
+      if (isSimulation) {
+        // In simulation mode, prioritize tokenWeights as it contains current user data
+        if (strategy.tokenWeights && strategy.tokenWeights.length > 0) {
+          strategy.tokenWeights.forEach((tw: any) => {
+            if (tw.token) {
+              console.log(`🔍 [ConfigPanel] Adding token from tokenWeights:`, tw.token);
+              tokenSet.add(tw.token);
+            }
+          });
+        } else if (strategy.tokens && Object.keys(strategy.tokens).length > 0) {
+          // Fallback to tokens object
+          console.log(`🔍 [ConfigPanel] Strategy ${idx} tokens (fallback):`, strategy.tokens);
+          Object.keys(strategy.tokens).forEach(token => {
+            console.log(`🔍 [ConfigPanel] Adding token from tokens object:`, token);
+            tokenSet.add(token);
+          });
+        }
+      } else {
+        // In calculator mode, prioritize tokens object over empty tokenWeights
+        if (strategy.tokens && Object.keys(strategy.tokens).length > 0) {
+          // Handle StrategyTokenWeight format (calculator tab)
+          console.log(`🔍 [ConfigPanel] Strategy ${idx} tokens (calculator):`, strategy.tokens);
+          Object.keys(strategy.tokens).forEach(token => {
+            console.log(`🔍 [ConfigPanel] Adding token from tokens object:`, token);
+            tokenSet.add(token);
+          });
+        } else if (strategy.tokenWeights && strategy.tokenWeights.length > 0) {
+          // Handle UIStrategy format fallback
+          console.log(`🔍 [ConfigPanel] Strategy ${idx} tokenWeights (fallback):`, strategy.tokenWeights);
+          strategy.tokenWeights.forEach((tw: any) => {
+            if (tw.token) {
+              console.log(`🔍 [ConfigPanel] Adding token:`, tw.token);
+              tokenSet.add(tw.token);
+            }
+          });
+        }
+      }
+      
+      if (tokenSet.size === 0) {
+        console.log(`🔍 [ConfigPanel] Strategy ${idx} has no tokens in either format`);
       }
     });
     
     const tokens = Array.from(tokenSet);
-    console.log('🔍 [ConfigPanel] Unique tokens found:', tokens);
+    console.log('🔍 [ConfigPanel] Final detected tokens:', tokens);
     return tokens;
   };
 
-  // Replace tokens with only the detected ones (calculator mode only)
+  // Update coefficients for detected tokens (works for both calculator and simulation modes)
   const ensureCoefficientsForDetectedTokens = () => {
-    if (isSimulation) {
-      console.log('🔍 [ConfigPanel] Skipping auto-update in simulation mode');
-      return; // Don't auto-update in simulation mode
-    }
     
     const detectedTokens = getUniqueTokensFromStrategies();
-    console.log('🔍 [ConfigPanel] Detected tokens:', detectedTokens);
-    console.log('🔍 [ConfigPanel] Current tokens:', config.tokenCoefficients.map(tc => tc.token));
+    console.log('🔍 [ConfigPanel] Detected tokens from strategies:', detectedTokens);
+    console.log('🔍 [ConfigPanel] Current token coefficients:', config.tokenCoefficients);
     
     // Only proceed if we have detected tokens and they're different from current ones
     if (detectedTokens.length === 0) {
-      console.log('🔍 [ConfigPanel] No tokens detected, keeping current configuration');
+      console.log('🔍 [ConfigPanel] No tokens detected, skipping coefficient update');
       return;
     }
     
-    const currentTokens = config.tokenCoefficients.map(tc => tc.token);
+    const currentTokens = config.tokenCoefficients.map(tc => tc.token as string);
     const tokensChanged = detectedTokens.length !== currentTokens.length || 
                          !detectedTokens.every(token => currentTokens.includes(token));
+    
+    console.log('🔍 [ConfigPanel] Current tokens:', currentTokens);
+    console.log('🔍 [ConfigPanel] Tokens changed:', tokensChanged);
     
     if (tokensChanged) {
       // Replace with only detected tokens, preserving existing coefficients where possible
@@ -112,22 +261,19 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
         };
       });
       
-      console.log('🔍 [ConfigPanel] Replacing tokens with detected ones:', newCoefficients);
+      console.log('🔍 [ConfigPanel] Updating coefficients:', newCoefficients);
       onConfigChange({ ...config, tokenCoefficients: newCoefficients });
-    } else {
-      console.log('🔍 [ConfigPanel] Tokens unchanged, no update needed');
     }
   };
 
-  // Run this effect when strategies change (calculator mode only)
+  // Run this effect when strategies change (both calculator and simulation modes)
   // Only run when we first load strategies, not during editing
   useEffect(() => {
-    // Only auto-detect tokens in calculator mode and when we have strategies but no token coefficients yet
-    if (!isSimulation && strategies.length > 0 && config.tokenCoefficients.length === 0) {
-      console.log('🔍 [ConfigPanel] Auto-detecting tokens for initial load');
+    // Auto-detect tokens when we have strategies
+    if (strategies.length > 0) {
       ensureCoefficientsForDetectedTokens();
     }
-  }, [strategies, isSimulation, config.tokenCoefficients.length]);
+  }, [strategies, isSimulation]);
 
   const handleBAppIdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     onConfigChange({ ...config, bAppId: e.target.value });
@@ -155,7 +301,7 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
       ...config,
       tokenCoefficients: [
         ...config.tokenCoefficients,
-        { token: '0x0000000000000000000000000000000000000000', coefficient: 0 },
+        { token: '0x0000000000000000000000000000000000000000', coefficient: 1 },
       ],
     });
   };
@@ -167,6 +313,90 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
 
   return (
     <VStack spacing={8} w="100%" align="stretch">
+      {/* BApp Totals Display */}
+        <Box 
+          bg="gradient.50" 
+          borderRadius="xl" 
+          p={6} 
+          border="1px solid" 
+          borderColor="gray.200"
+        >
+          <Text fontSize="lg" fontWeight="bold" color="ssv.700" mb={4} textAlign="center">
+            BApp Overview
+          </Text>
+          <VStack spacing={4}>
+            {/* Token Totals by Type */}
+            <Box w="100%">
+              <Text fontSize="md" fontWeight="semibold" color="gray.700" mb={3} textAlign="center">
+                Total Tokens Deposited by Type
+              </Text>
+              {isLoadingData ? (
+                <Flex justify="center" align="center" py={8}>
+                  <VStack spacing={3}>
+                    <Spinner color="ssv.500" size="lg" />
+                    <Text color="gray.500" fontSize="sm">Loading token data...</Text>
+                  </VStack>
+                </Flex>
+              ) : (() => {
+                const tokenTotals = calculateTokenTotals();
+                const tokenEntries = Object.entries(tokenTotals);
+                
+                if (tokenEntries.length === 0) {
+                  return (
+                    <Text color="gray.500" fontSize="sm" textAlign="center">
+                      No tokens deposited
+                    </Text>
+                  );
+                }
+                
+                return (
+                  <SimpleGrid columns={{ base: 1, md: tokenEntries.length <= 2 ? tokenEntries.length : 3 }} spacing={4}>
+                    {tokenEntries.map(([tokenAddress, total]) => (
+                      <Stat key={tokenAddress} textAlign="center" bg="white" p={3} borderRadius="lg" border="1px solid" borderColor="gray.200">
+                        <StatLabel color="gray.600" fontSize="xs" fontWeight="medium">
+                          {getTokenDisplayName(tokenAddress)}
+                        </StatLabel>
+                        <StatNumber color="green.600" fontSize="lg" fontWeight="bold">
+                          {total}
+                        </StatNumber>
+                        <StatHelpText color="gray.500" fontSize="xs">
+                          Total deposited
+                        </StatHelpText>
+                      </Stat>
+                    ))}
+                  </SimpleGrid>
+                );
+              })()}
+            </Box>
+            
+            {/* Delegated Balance */}
+            <Box w="100%">
+              <Stat textAlign="center" bg="white" p={4} borderRadius="lg" border="1px solid" borderColor="gray.200">
+                <StatLabel color="gray.600" fontSize="sm" fontWeight="medium">
+                  Total Delegated Balance
+                </StatLabel>
+                {isLoadingData ? (
+                  <Flex justify="center" align="center" py={4}>
+                    <VStack spacing={2}>
+                      <Spinner color="blue.500" size="md" />
+                      <Text color="gray.500" fontSize="xs">Loading...</Text>
+                    </VStack>
+                  </Flex>
+                ) : (
+                  <>
+                    <StatNumber color="blue.600" fontSize="2xl" fontWeight="bold">
+                      {getTotalDelegatedBalance()}
+                    </StatNumber>
+                    <StatHelpText color="gray.500" fontSize="xs">
+                      BApp total delegation amount
+                    </StatHelpText>
+                  </>
+                )}
+              </Stat>
+            </Box>
+          </VStack>
+        </Box>
+
       {/* Basic Configuration */}
       <VStack spacing={6} align="stretch">
         <FormControl>
@@ -283,19 +513,7 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
             <Badge colorScheme="ssv" fontSize="xs" px={2} py={1} borderRadius="md">
               {config.tokenCoefficients.length} tokens
             </Badge>
-            {!isSimulation && strategies.length > 0 && (
-              <Button
-                size="xs"
-                variant="outline"
-                colorScheme="ssv"
-                onClick={() => {
-                  console.log('🔍 [ConfigPanel] Manual token refresh triggered');
-                  ensureCoefficientsForDetectedTokens();
-                }}
-              >
-                Refresh Tokens
-              </Button>
-            )}
+
           </HStack>
         </Flex>
         
@@ -392,6 +610,8 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
           )}
         </VStack>
       </VStack>
+
+
     </VStack>
   );
 };

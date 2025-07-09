@@ -11,6 +11,7 @@ export interface StrategyTokenWeight {
       obligatedPercentage: number;
     };
   };
+  validatorBalanceWeight?: number;
 }
 
 export interface WeightCalculationOptions {
