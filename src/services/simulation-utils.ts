@@ -137,33 +137,6 @@ const calculateWeightedLogSum = (
 };
 
 /**
- * Helper function to calculate weighted products for geometric mean
- * This is product of (amount^coefficient) for tokens * (delegatedBalance^validatorCoeff)
- */
-const calculateWeightedProducts = (
-  strategy: StrategyTokenWeight,
-  coefficients: TokenCoefficient[],
-  validatorCoefficient: number
-): number => {
-  // Use logarithmic calculation for numerical stability
-  const logSum = calculateWeightedLogSum(strategy, coefficients, validatorCoefficient);
-  
-  if (logSum === -Infinity) {
-    return 0;
-  }
-  
-  // Convert back from log space, but check for overflow
-  const result = Math.exp(logSum);
-  
-  // Handle potential overflow/underflow
-  if (!isFinite(result)) {
-    return logSum > 0 ? Number.MAX_SAFE_INTEGER : Number.MIN_VALUE;
-  }
-  
-  return result;
-};
-
-/**
  * Calculate strategy weights using arithmetic weighted average
  */
 export const calcArithmeticStrategyWeights = (
@@ -207,8 +180,7 @@ export const calcHarmonicStrategyWeights = (
   // Normalize weights to sum to 1
   const normalizedWeights = new Map<string, number>();
   for (const [id, weight] of unnormalizedWeights.entries()) {
-    const normalizedWeight = weightSum > 0 ? weight / weightSum : 0;
-    normalizedWeights.set(id, normalizedWeight);
+    normalizedWeights.set(id, weight / weightSum);
   }
 
   return normalizedWeights;
@@ -221,54 +193,25 @@ export const calcGeometricStrategyWeights = (
   strategyTokenWeights: StrategyTokenWeight[],
   { coefficients, validatorCoefficient = 0 }: WeightCalculationOptions,
 ): Map<string, number> => {
-  const totalCoefficient = calculateCoefficientsSum(coefficients) + validatorCoefficient;
-  
-  // Use logarithmic calculations throughout for numerical stability
-  const logWeights: Array<{ id: string; logWeight: number }> = [];
-  
-  for (const strategy of strategyTokenWeights) {
-    
-    // Get the log sum directly for numerical stability
+  // First calculate unnormalized weights
+  const unnormalizedWeights = strategyTokenWeights.reduce((weightMap, strategy) => {
+    const totalCoefficient = calculateCoefficientsSum(coefficients) + validatorCoefficient;
     const logSum = calculateWeightedLogSum(strategy, coefficients, validatorCoefficient);
-    
-    // Calculate log of nth root: log(x^(1/n)) = log(x)/n
-    const logWeight = totalCoefficient > 0 && logSum !== -Infinity 
-      ? logSum / totalCoefficient 
-      : -Infinity;
-      
-    logWeights.push({
-      id: strategy.strategy.toString(),
-      logWeight
-    });
-  }
+    // if one of the nominators is 0, we should not calculate exponential, the entire weight is zero
+    const finalWeight = logSum != 0 ? Math.exp(logSum / totalCoefficient) : 0;
+    return weightMap.set(strategy.strategy.toString(), finalWeight);
+  }, new Map<string, number>());
 
-  // Convert back to regular weights and calculate normalization in log space
-  const validLogWeights = logWeights.filter(w => w.logWeight !== -Infinity);
-  
-  if (validLogWeights.length === 0) {
-    const result = new Map<string, number>();
-    for (const { id } of logWeights) {
-      result.set(id, 0);
-    }
-    return result;
-  }
-  
-  // For numerical stability, subtract the maximum log weight before exponentiating
-  const maxLogWeight = Math.max(...validLogWeights.map(w => w.logWeight));
-  
-  const adjustedWeights = logWeights.map(({ id, logWeight }) => ({
-    id,
-    weight: logWeight === -Infinity ? 0 : Math.exp(logWeight - maxLogWeight)
-  }));
-  
   // Calculate sum for normalization
-  const weightSum = adjustedWeights.reduce((sum, { weight }) => sum + weight, 0);
+  const weightSum = Array.from(unnormalizedWeights.values()).reduce(
+    (sum, weight) => sum + weight,
+    0,
+  );
 
   // Normalize weights to sum to 1
   const normalizedWeights = new Map<string, number>();
-  for (const { id, weight } of adjustedWeights) {
-    const normalizedWeight = weightSum > 0 ? weight / weightSum : 0;
-    normalizedWeights.set(id, normalizedWeight);
+  for (const [id, weight] of unnormalizedWeights.entries()) {
+    normalizedWeights.set(id, weight / weightSum);
   }
 
   return normalizedWeights;

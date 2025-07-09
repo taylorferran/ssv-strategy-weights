@@ -150,9 +150,9 @@ const ConfigPanel = ({ config, onConfigChange, onAddRandomStrategy, strategies =
       case 'arithmetic':
         return '\\bar{x} = \\frac{\\sum_{i=1}^{n} w_i x_i}{\\sum_{i=1}^{n} w_i}';
       case 'geometric':
-        return '\\bar{x} = \\left(\\prod_{i=1}^{n} x_i^{w_i}\\right)^{\\frac{1}{\\sum_{i=1}^{n} w_i}}';
+        return '\\exp\\left(\\frac{\\sum_{i=1}^{n} w_i \\ln x_i}{\\sum_{i=1}^{n} w_i}\\right)';
       case 'harmonic':
-        return 'H = \\frac{n}{\\sum_{i=1}^{n} \\frac{w_i}{x_i}} = \\left(\\frac{\\sum_{i=1}^{n} w_i x_i^{-1}}{\\sum_{i=1}^{n} w_i}\\right)^{-1}';
+        return 'H = \\frac{\\sum w_i}{\\sum \\frac{w_i}{x_i}} = \\left(\\frac{\\sum w_i x_i^{-1}}{\\sum w_i}\\right)^{-1}';
       default:
         return '';
     }
