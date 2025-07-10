@@ -41,9 +41,10 @@ interface StrategyListProps {
   isSimulation?: boolean;
   weights?: Map<string, number>;
   tokenCoefficients?: any[];
+  relevantTokens?: Set<string>;
 }
 
-const StrategyList = ({ strategies, deposits, delegatedBalances, editable = false, onStrategiesChange, onDelegatedBalanceChange, isSimulation = false, weights, tokenCoefficients = [] }: StrategyListProps) => {
+const StrategyList = ({ strategies, deposits, delegatedBalances, editable = false, onStrategiesChange, onDelegatedBalanceChange, isSimulation = false, weights, tokenCoefficients = [], relevantTokens = new Set() }: StrategyListProps) => {
   const hasRows = strategies && strategies.length > 0;
   const toast = useToast();
   
@@ -350,10 +351,27 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
           <Tbody>
                                      {strategies.map((strategy, sIdx) => {
               const strategyDelegatedBalance = getDelegatedBalance(strategy);
-              const tokenCount = strategy.tokenWeights?.length || 0;
+              // Calculate filtered token count for display
+              let filteredTokenCount = 0;
+              if (strategy.tokenWeights?.length > 0) {
+                filteredTokenCount = strategy.tokenWeights.filter((tw: any) => {
+                  if (!tw.token) return false;
+                  return relevantTokens.size === 0 || relevantTokens.has(tw.token.toLowerCase());
+                }).length;
+              }
+              const tokenCount = filteredTokenCount;
               
-              // Ensure every strategy has at least one row, even if no tokens
-              const tokensToRender = tokenCount > 0 ? strategy.tokenWeights : [{ token: null, weight: 0, depositAmount: "0" }];
+              // Filter tokens by relevantTokens and ensure every strategy has at least one row
+              let filteredTokens = [];
+              if (tokenCount > 0 && strategy.tokenWeights) {
+                filteredTokens = strategy.tokenWeights.filter((tw: any) => {
+                  if (!tw.token) return false;
+                  // Include token if no relevantTokens filter or if token is in the relevant set
+                  return relevantTokens.size === 0 || relevantTokens.has(tw.token.toLowerCase());
+                });
+              }
+              
+              const tokensToRender = filteredTokens.length > 0 ? filteredTokens : [{ token: null, weight: 0, depositAmount: "0" }];
              
              return (
                <React.Fragment key={`strategy-${strategy.id || strategy.strategy}-${sIdx}`}>

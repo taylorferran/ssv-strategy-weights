@@ -9,6 +9,7 @@ import {
   Flex,
   SimpleGrid,
   Divider,
+  Spinner,
 } from '@chakra-ui/react';
 import { PieChart } from 'react-minimal-pie-chart';
 import { CopyIcon, CheckIcon } from '@chakra-ui/icons';
@@ -18,6 +19,7 @@ interface WeightDisplayProps {
   allStrategies?: any[]; // All strategies to show, even those without weights
   isSimulation?: boolean;
   simulationResults?: any[]; // For detailed breakdown in simulation mode
+  isLoading?: boolean; // Show loading spinner when recalculating
 }
 
 const PIE_COLORS = [
@@ -31,7 +33,7 @@ const PIE_COLORS = [
   '#718096', // gray
 ];
 
-const WeightDisplay = ({ weights, allStrategies, isSimulation, simulationResults }: WeightDisplayProps) => {
+const WeightDisplay = ({ weights, allStrategies, isSimulation, simulationResults, isLoading }: WeightDisplayProps) => {
   // Calculate total weight for normalization
   const totalWeight = Array.from(weights.values()).reduce((sum, weight) => sum + weight, 0);
   
@@ -106,7 +108,14 @@ const WeightDisplay = ({ weights, allStrategies, isSimulation, simulationResults
         {/* Chart Section */}
         <Box textAlign="center">
           <Box w="240px" h="240px" mx="auto" mb={4}>
-            {shouldRenderChart ? (
+            {isLoading ? (
+              <VStack spacing={4} justify="center" h="240px">
+                <Spinner size="xl" color="ssv.500" thickness="4px" />
+                <Text color="gray.500" fontSize="md" fontWeight="medium">
+                  Recalculating weights...
+                </Text>
+              </VStack>
+            ) : shouldRenderChart ? (
               <PieChart
                 data={pieData}
                 label={({ dataEntry }) => `${Math.round(dataEntry.percentage)}%`}

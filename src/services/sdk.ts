@@ -34,7 +34,11 @@ const sdk = new BasedAppsSDK({
 export const getParticipantWeights = async (bAppId: string): Promise<StrategyTokenWeight[]> => {
   try {
     const weights = await sdk.api.getParticipantWeights({ bAppId: bAppId as `0x${string}` });
-    console.log("SDK returned weights:", weights?.length || 0, "strategies");
+    
+    // Detailed logging of the raw SDK response
+    console.log("🔍 [SDK] RAW getParticipantWeights response for bApp", bAppId);
+    console.log("🔍 [SDK] Full response structure:", JSON.stringify(weights, null, 2));
+    
     return weights as unknown as StrategyTokenWeight[];
   } catch (error) {
     console.error("Error fetching participant weights:", error);
@@ -55,6 +59,46 @@ export const getDepositedBalancesForStrategy = async (strategyId: string) => {
 export const getDelegatedBalances = async (bAppId: string) => {
   try {
     const delegatedBalances = await sdk.api.getDelegatedBalances({ bAppId: bAppId as `0x${string}` });
+    
+    // Detailed logging of the raw SDK response (BigInt-safe)
+    console.log("🔍 [SDK] RAW getDelegatedBalances response for bApp", bAppId);
+    console.log("🔍 [SDK] Type of delegatedBalances:", typeof delegatedBalances);
+    console.log("🔍 [SDK] Keys in delegatedBalances:", Object.keys(delegatedBalances || {}));
+    
+    // BigInt-safe JSON serialization
+    const bigIntReplacer = (key: string, value: any) => {
+      if (typeof value === 'bigint') {
+        return value.toString() + 'n'; // Add 'n' suffix to identify BigInt values
+      }
+      return value;
+    };
+    
+    try {
+      console.log("🔍 [SDK] Full delegatedBalances structure (BigInt-safe):", JSON.stringify(delegatedBalances, bigIntReplacer, 2));
+    } catch (stringifyError) {
+      console.log("🔍 [SDK] Could not stringify delegatedBalances, logging raw object:", delegatedBalances);
+    }
+    
+    // Additional detailed breakdown if it's an object
+    if (delegatedBalances && typeof delegatedBalances === 'object') {
+      console.log("🔍 [SDK] Detailed breakdown:");
+      Object.entries(delegatedBalances).forEach(([key, value]) => {
+        console.log(`🔍 [SDK] ${key}:`, typeof value, Array.isArray(value) ? `(array length: ${value.length})` : '');
+        
+        // Handle BigInt values specially
+        if (typeof value === 'bigint') {
+          console.log(`🔍 [SDK] ${key} BigInt value:`, value.toString());
+        } else if (Array.isArray(value)) {
+          console.log(`🔍 [SDK] ${key} array contents:`, value);
+          value.forEach((item, index) => {
+            console.log(`🔍 [SDK] ${key}[${index}]:`, item);
+          });
+        } else {
+          console.log(`🔍 [SDK] ${key} value:`, value);
+        }
+      });
+    }
+    
     return delegatedBalances;
   } catch (error) {
     console.error(`Error fetching delegated balances for BApp ${bAppId}:`, error);
@@ -68,10 +112,7 @@ export const calculateStrategyWeights = (
   calculationType: 'arithmetic' | 'geometric' | 'harmonic'
 ): Map<string, number> => {
   try {
-    console.log(`🔍 [SDK] Calculating ${calculationType} weights for ${strategyTokenWeights?.length || 0} strategies`);
-    
     if (!strategyTokenWeights?.length) {
-      console.log('🔍 [SDK] No strategies to calculate');
       return new Map();
     }
     
@@ -90,7 +131,6 @@ export const calculateStrategyWeights = (
         break;
     }
     
-    console.log(`🔍 [SDK] Successfully calculated weights for ${result?.size || 0} strategies`);
     return result;
   } catch (error: any) {
     console.error(`🚨 [SDK] Error in calculateStrategyWeights (${calculationType}):`, error.message);
