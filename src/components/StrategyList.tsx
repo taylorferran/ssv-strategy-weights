@@ -48,6 +48,8 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
   const hasRows = strategies && strategies.length > 0;
   const toast = useToast();
   
+
+  
   // Track input values during editing to allow free typing
   const [editingValues, setEditingValues] = useState<{[key: string]: string}>({});
 
@@ -56,11 +58,11 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
     try {
       // First try to get from the strategy's tokenWeight (for simulation/edited data)
       const tokenWeight = strategy.tokenWeights?.find((tw: any) => 
-        tw.token.toLowerCase() === tokenAddress.toLowerCase()
+        tw.token?.toLowerCase() === tokenAddress?.toLowerCase()
       );
       
-      // If found in tokenWeights, always use that value (including "0")
-      if (tokenWeight?.depositAmount !== undefined) {
+      // If found in tokenWeights and has depositAmount, use that value
+      if (tokenWeight && tokenWeight.depositAmount !== undefined) {
         return tokenWeight.depositAmount;
       }
       
@@ -95,9 +97,12 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
       }
       
       // Finally, try to get from the original API data structure (for calculator tab)
+      // Note: strategy.tokens[tokenAddress].amount is in ether format, need to convert to wei
       if (strategy.tokens && strategy.tokens[tokenAddress]) {
-        const amount = strategy.tokens[tokenAddress].amount || "0";
-        return amount;
+        const amountInEther = strategy.tokens[tokenAddress].amount || "0";
+        // Convert from ether to wei format to maintain consistency
+        const amountInWei = parseEther(amountInEther).toString();
+        return amountInWei;
       }
       
       return "0";
@@ -298,7 +303,15 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
     if (!onStrategiesChange) return;
     
     const updatedStrategies = [...strategies];
+    
+    // Ensure the tokenWeight object exists
+    if (!updatedStrategies[strategyIndex].tokenWeights[tokenIndex]) {
+      updatedStrategies[strategyIndex].tokenWeights[tokenIndex] = {};
+    }
+    
+    // Update the field
     updatedStrategies[strategyIndex].tokenWeights[tokenIndex][field] = value;
+    
     onStrategiesChange(updatedStrategies);
   };
 
@@ -343,8 +356,8 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
               <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3}>Strategy ID</Th>
               <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3}>Token</Th>
               <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3} isNumeric>Deposit Amount</Th>
-              <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3} isNumeric>Calculated Weight</Th>
               <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3} isNumeric>Delegated Balance</Th>
+              <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3} isNumeric>Calculated Weight</Th>
               {editable && <Th fontSize="xs" fontWeight="bold" color="gray.600" py={3}>Actions</Th>}
             </Tr>
           </Thead>
@@ -467,9 +480,19 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
                                   return newState;
                                 });
                                 
+                                // Find the correct token index in the original tokenWeights array
+                                const actualTokenIndex = strategies[sIdx].tokenWeights.findIndex((tw: any) => 
+                                  tw.token?.toLowerCase() === tokenWeight.token?.toLowerCase()
+                                );
+                                
+                                if (actualTokenIndex === -1) {
+                                  console.error('Could not find token in tokenWeights array');
+                                  return;
+                                }
+                                
                                 // Handle empty string - set to 0
                                 if (valueString === "" || valueString === undefined) {
-                                  handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                  handleUpdateTokenWeight(sIdx, actualTokenIndex, 'depositAmount', "0");
                                   return;
                                 }
                                 
@@ -477,13 +500,19 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
                                 const numValue = Number(valueString);
                                 if (!isNaN(numValue) && numValue >= 0) {
                                   const weiValue = parseEther(valueString).toString();
-                                  handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', weiValue);
+                                  handleUpdateTokenWeight(sIdx, actualTokenIndex, 'depositAmount', weiValue);
                                 } else {
-                                  handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                  handleUpdateTokenWeight(sIdx, actualTokenIndex, 'depositAmount', "0");
                                 }
                               } catch (error) {
                                 console.error('Invalid value on blur:', valueString, error);
-                                handleUpdateTokenWeight(sIdx, tokenIndex, 'depositAmount', "0");
+                                // Also use actualTokenIndex for error case
+                                const actualTokenIndex = strategies[sIdx].tokenWeights.findIndex((tw: any) => 
+                                  tw.token?.toLowerCase() === tokenWeight.token?.toLowerCase()
+                                );
+                                if (actualTokenIndex !== -1) {
+                                  handleUpdateTokenWeight(sIdx, actualTokenIndex, 'depositAmount', "0");
+                                }
                               }
                             }}
                             onKeyDown={(e) => {
@@ -521,15 +550,6 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
                                 return "0";
                               }
                             })()}
-                          </Text>
-                        )}
-                      </Td>
-                      
-                      {/* Calculated Weight - only show on first row */}
-                      <Td py={3} borderRight="1px solid" borderColor="gray.100" isNumeric>
-                        {tokenIndex === 0 && (
-                          <Text fontSize="sm" fontWeight="bold">
-                            {getCalculatedWeight(strategy)}
                           </Text>
                         )}
                       </Td>
@@ -624,6 +644,15 @@ const StrategyList = ({ strategies, deposits, delegatedBalances, editable = fals
                               {strategyDelegatedBalance}
                             </Text>
                           )
+                        )}
+                      </Td>
+                      
+                      {/* Calculated Weight - only show on first row */}
+                      <Td py={3} borderRight="1px solid" borderColor="gray.100" isNumeric>
+                        {tokenIndex === 0 && (
+                          <Text fontSize="sm" fontWeight="bold">
+                            {getCalculatedWeight(strategy)}
+                          </Text>
                         )}
                       </Td>
                       

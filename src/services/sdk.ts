@@ -1,7 +1,8 @@
 import { BasedAppsSDK, chains } from "@ssv-labs/bapps-sdk";
-import { createPublicClient, createWalletClient, http } from 'viem';
+import { createPublicClient, createWalletClient, http, formatEther } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import type { BAppConfig, StrategyTokenWeight, WeightCalculationOptions } from '../types';
+import type { BAppConfig, StrategyTokenWeight, WeightCalculationOptions, UIStrategy } from '../types';
+import { GraphQLClient } from 'graphql-request';
 
 const hoodi = chains.hoodi;
 const transport = http();
@@ -26,22 +27,301 @@ const sdk = new BasedAppsSDK({
   extendedConfig: {
    subgraph: {
     //url: "https://api.studio.thegraph.com/query/71118/ssv-network-hoodi/version/latest",
-     apiKey: "6815e91a3ebffff4748fcc3ab91cf5fa"
+     apiKey: "0e4cbf919a4e7ace964f16e8a8df17ed"
    }
  }
 })
 
-export const getParticipantWeights = async (bAppId: string): Promise<StrategyTokenWeight[]> => {
+/**
+ * Fetch the real owner address for a strategy from the subgraph
+ */
+const getStrategyOwner = async (strategyId: string): Promise<string> => {
   try {
-    const weights = await sdk.api.getParticipantWeights({ bAppId: bAppId as `0x${string}` });
-    
-    // Detailed logging of the raw SDK response
-    console.log("🔍 [SDK] RAW getParticipantWeights response for bApp", bAppId);
-    console.log("🔍 [SDK] Full response structure:", JSON.stringify(weights, null, 2));
-    
-    return weights as unknown as StrategyTokenWeight[];
+    // Use the correct subgraph URL and include the API key in the headers
+    const client = new GraphQLClient('https://api.studio.thegraph.com/query/71118/ssv-network-hoodi/version/latest', {
+      headers: {
+        'x-api-key': '0e4cbf919a4e7ace964f16e8a8df17ed'
+      }
+    });
+    const query = `
+      query GetStrategyOwner($id: ID!) {
+        strategy(id: $id) {
+          owner {
+            id
+          }
+        }
+      }
+    `;
+    const result = await client.request(query, { id: strategyId }) as { strategy?: { owner?: { id?: string } } };
+    const ownerId = result?.strategy?.owner?.id;
+    if (!ownerId) {
+      return "0x0000000000000000000000000000000000000000"; // fallback
+    }
+    return ownerId;
   } catch (error) {
-    console.error("Error fetching participant weights:", error);
+    return "0x0000000000000000000000000000000000000000"; // fallback
+  }
+};
+
+/**
+ * Transform simulation data to the format expected by the subgraph API
+ */
+const transformSimulationToSubgraphResponse = async (simulationStrategies: UIStrategy[], bAppId: string, graphqlClient: any) => {
+  // Extract unique tokens across all strategies
+  const uniqueTokens = new Set<string>();
+  simulationStrategies.forEach(strategy => {
+    strategy.tokenWeights?.forEach(tokenWeight => {
+      if (tokenWeight.token) {
+        uniqueTokens.add(tokenWeight.token.toLowerCase());
+      }
+    });
+  });
+  const allTokens = Array.from(uniqueTokens);
+
+  // Calculate total obligated balance per token (across all strategies)
+  const tokenTotals = new Map<string, bigint>();
+  allTokens.forEach(token => {
+    let total = 0n;
+    simulationStrategies.forEach(strategy => {
+      const tw = strategy.tokenWeights?.find(tw => tw.token.toLowerCase() === token);
+      if (tw && tw.depositAmount) {
+        total += BigInt(tw.depositAmount);
+      }
+    });
+    tokenTotals.set(token, total);
+  });
+
+  // Build bApp tokens array (match real subgraph scaling and fields)
+  const bAppTokens = allTokens.map(token => ({
+    token: token as `0x${string}`,
+    sharedRiskLevel: "1000000",
+    totalObligatedBalance: (tokenTotals.get(token) || 0n).toString()
+  }));
+
+  // Build strategies array with real owner addresses and correct scaling
+  const strategies = await Promise.all(simulationStrategies.map(async (strategy) => {
+    const strategyId = (strategy.id || strategy.strategy)?.toString() || "";
+    const realOwnerAddress = await getStrategyOwner(strategyId);
+    // For each token in allTokens, ensure an entry exists
+    const obligations = allTokens.map(token => {
+      const tw = strategy.tokenWeights?.find(tw => tw.token.toLowerCase() === token);
+      const obligatedBalance = tw && tw.depositAmount ? tw.depositAmount : "0";
+      const totalObligatedBalance = tokenTotals.get(token) || 0n;
+      let percentage = "0";
+      if (totalObligatedBalance > 0n) {
+        percentage = ((BigInt(obligatedBalance) * 10000n) / totalObligatedBalance).toString();
+      }
+      return {
+        obligatedBalance,
+        token: token as `0x${string}`,
+        percentage
+      };
+    });
+    const balances = allTokens.map(token => {
+      const tw = strategy.tokenWeights?.find(tw => tw.token.toLowerCase() === token);
+      const obligatedBalance = tw && tw.depositAmount ? tw.depositAmount : "0";
+      const totalObligatedBalance = tokenTotals.get(token) || 0n;
+      let riskValue = "0";
+      if (totalObligatedBalance > 0n) {
+        riskValue = ((BigInt(obligatedBalance) * 10000n) / totalObligatedBalance).toString();
+      }
+      return {
+        token: token as `0x${string}`,
+        riskValue
+      };
+    });
+    const delegators: any[] = [];
+    return {
+      obligations,
+      strategy: {
+        id: strategyId,
+        owner: {
+          id: realOwnerAddress as `0x${string}`,
+          delegators
+        },
+        balances
+      }
+    };
+  }));
+
+  const result = {
+    bapp: {
+      bAppTokens,
+      id: bAppId,
+      strategies
+    }
+  };
+
+  return result;
+};
+
+/**
+ * Create a mockable SDK instance that can intercept GraphQL requests
+ */
+const createMockableSDK = (simulationData?: { strategies: UIStrategy[]; bAppId: string }) => {
+  
+  if (simulationData) {
+  }
+  
+  const originalSdk = new BasedAppsSDK({
+    beaconchainUrl: "https://ethereum-hoodi-beacon-api.publicnode.com",
+    publicClient,
+    walletClient,
+    extendedConfig: {
+      subgraph: {
+        apiKey: "6815e91a3ebffff4748fcc3ab91cf5fa"
+      }
+    }
+  });
+
+  if (simulationData) {
+    
+    // Store original request method
+    const originalRequest = originalSdk.core.graphs.bam.client.request;
+    
+    // Override with interceptor
+    originalSdk.core.graphs.bam.client.request = async (query: any, variables?: any) => {
+      // Safely log the query
+      const queryStr = typeof query === 'string' ? query : JSON.stringify(query);
+      
+      // Check if this is the getParticipantWeightInput query
+      const isParticipantWeightQuery = (
+        (typeof query === 'string' && (query.includes('getParticipantWeightInput') || query.includes('ParticipantWeightInput'))) ||
+        (queryStr.includes('getParticipantWeightInput') || queryStr.includes('ParticipantWeightInput'))
+      );
+      
+      // Check if this is a bApp metadata query (might be causing "bApp not found")
+      const isBAppMetadataQuery = (
+        (typeof query === 'string' && (query.includes('getBappMetadata') || query.includes('BappMetadata'))) ||
+        (queryStr.includes('getBappMetadata') || queryStr.includes('BappMetadata'))
+      );
+      
+      // Check if this is any other bApp-related query that might fail
+      const isOtherBAppQuery = (
+        (typeof query === 'string' && (query.includes('bApp') || query.includes('Bapp'))) ||
+        (queryStr.includes('bApp') || queryStr.includes('Bapp')) ||
+        (queryStr.includes('GetAllStrategiesForBapp')) ||
+        (queryStr.includes('GetBAppDelegators')) ||
+        (queryStr.includes('GetTotalDelegatedPercentageForAccount'))
+      );
+      
+      if (isParticipantWeightQuery) {
+        // Log the mock subgraph query result
+        const mockResponse = await transformSimulationToSubgraphResponse(simulationData.strategies, simulationData.bAppId, originalSdk.core.graphs.bam.client);
+        console.log('[MOCKED SUBGRAPH] getParticipantWeightInput:', mockResponse);
+        return mockResponse;
+      }
+      
+      if (isBAppMetadataQuery) {
+        
+        // Return a mock bApp metadata response
+        const mockBAppResponse = {
+          id: simulationData.bAppId,
+          metadataUri: "https://example.com/metadata",
+          // Add other required fields as needed
+        };
+        
+        return mockBAppResponse;
+      }
+      
+      if (isOtherBAppQuery) {
+        
+        // Return a generic mock response for other bApp queries
+        const mockGenericResponse = {
+          id: simulationData.bAppId,
+          // Add minimal required fields
+        };
+        
+        return mockGenericResponse;
+      }
+      
+      // For all other queries, use the original request method
+      try {
+        const originalResult = await originalRequest.call(originalSdk.core.graphs.bam.client, query, variables);
+        return originalResult;
+      } catch (error) {
+        // If it's any error that might be bApp-related, return a mock response
+        if (error instanceof Error && (
+          error.message.includes('bApp not found') ||
+          error.message.includes('bApp') ||
+          error.message.includes('not found') ||
+          error.message.includes('404')
+        )) {
+          
+          // Return a more complete mock response based on the query type
+          if (queryStr.includes('GetAllStrategiesForBapp')) {
+            return simulationData.strategies.map(s => ({
+              id: s.id || s.strategy,
+              strategy: { id: s.id || s.strategy }
+            }));
+          } else if (queryStr.includes('GetBAppDelegators')) {
+            return [];
+          } else if (queryStr.includes('GetTotalDelegatedPercentageForAccount')) {
+            return { percentage: "0" };
+          } else {
+            return {
+              id: simulationData.bAppId,
+              bAppTokens: [],
+              strategies: []
+            };
+          }
+        }
+        
+        throw error;
+      }
+    };
+  } else {
+  }
+
+  return originalSdk;
+};
+
+export const getParticipantWeights = async (
+  bAppId: string,
+  simulationData?: UIStrategy[]
+): Promise<StrategyTokenWeight[]> => {
+  try {
+    
+    if (simulationData) {
+    }
+    
+    // Use mockable SDK if simulation data is provided
+    if (!simulationData) {
+      // Remove debug logging for real subgraph query and variables
+      const realQuery = `query getParticipantWeightInput($bAppId: ID!) { bapp(id: $bAppId) { id bAppTokens { token sharedRiskLevel totalObligatedBalance } strategies { obligations { obligatedBalance token percentage } strategy { id owner { id delegators { id percentage } } balances { token riskValue } } } } }`;
+      const realVariables = { bAppId };
+      // Log the real subgraph query result
+      const realBAppData = await sdk.core.graphs.bam.client.request(
+        realQuery,
+        realVariables
+      );
+      console.log('[REAL SUBGRAPH] getParticipantWeightInput:', realBAppData);
+    }
+    
+    const sdkToUse = simulationData ? 
+      createMockableSDK({ strategies: simulationData, bAppId }) : 
+      sdk;
+    
+    // Try the SDK call - let it fail if the mock doesn't work
+    
+    try {
+      // Remove debug logging for mock SDK query and variables
+      const weights = await sdkToUse.api.getParticipantWeights({ bAppId: bAppId as `0x${string}` });
+      
+      return weights as unknown as StrategyTokenWeight[];
+    } catch (sdkError) {
+      console.error("🔍 [getParticipantWeights] ❌ SDK ERROR:", sdkError);
+      console.error("🔍 [getParticipantWeights] ❌ SDK Error message:", sdkError instanceof Error ? sdkError.message : 'Unknown error');
+      console.error("🔍 [getParticipantWeights] ❌ SDK Error stack:", sdkError instanceof Error ? sdkError.stack : 'No stack');
+      console.error("🔍 [getParticipantWeights] ❌ Called with bAppId:", bAppId);
+      console.error("🔍 [getParticipantWeights] ❌ Had simulation data:", !!simulationData);
+      
+      // Re-throw the error so we can see it in the console
+      throw sdkError;
+    }
+  } catch (error) {
+    console.error("🔍 [getParticipantWeights] ❌ OUTER ERROR:", error);
+    console.error("🔍 [getParticipantWeights] ❌ OUTER Error message:", error instanceof Error ? error.message : 'Unknown error');
     return [];
   }
 };
@@ -60,11 +340,6 @@ export const getDelegatedBalances = async (bAppId: string) => {
   try {
     const delegatedBalances = await sdk.api.getDelegatedBalances({ bAppId: bAppId as `0x${string}` });
     
-    // Detailed logging of the raw SDK response (BigInt-safe)
-    console.log("🔍 [SDK] RAW getDelegatedBalances response for bApp", bAppId);
-    console.log("🔍 [SDK] Type of delegatedBalances:", typeof delegatedBalances);
-    console.log("🔍 [SDK] Keys in delegatedBalances:", Object.keys(delegatedBalances || {}));
-    
     // BigInt-safe JSON serialization
     const bigIntReplacer = (key: string, value: any) => {
       if (typeof value === 'bigint') {
@@ -74,29 +349,8 @@ export const getDelegatedBalances = async (bAppId: string) => {
     };
     
     try {
-      console.log("🔍 [SDK] Full delegatedBalances structure (BigInt-safe):", JSON.stringify(delegatedBalances, bigIntReplacer, 2));
     } catch (stringifyError) {
-      console.log("🔍 [SDK] Could not stringify delegatedBalances, logging raw object:", delegatedBalances);
-    }
-    
-    // Additional detailed breakdown if it's an object
-    if (delegatedBalances && typeof delegatedBalances === 'object') {
-      console.log("🔍 [SDK] Detailed breakdown:");
-      Object.entries(delegatedBalances).forEach(([key, value]) => {
-        console.log(`🔍 [SDK] ${key}:`, typeof value, Array.isArray(value) ? `(array length: ${value.length})` : '');
-        
-        // Handle BigInt values specially
-        if (typeof value === 'bigint') {
-          console.log(`🔍 [SDK] ${key} BigInt value:`, value.toString());
-        } else if (Array.isArray(value)) {
-          console.log(`🔍 [SDK] ${key} array contents:`, value);
-          value.forEach((item, index) => {
-            console.log(`🔍 [SDK] ${key}[${index}]:`, item);
-          });
-        } else {
-          console.log(`🔍 [SDK] ${key} value:`, value);
-        }
-      });
+      // Silent fallback if JSON.stringify fails
     }
     
     return delegatedBalances;

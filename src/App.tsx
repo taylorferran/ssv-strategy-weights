@@ -1,13 +1,15 @@
-import { ChakraProvider, Box, VStack, HStack, Heading, Image, Text, Container, Spacer, Tabs, TabList, Tab, TabPanels, TabPanel, useToast } from '@chakra-ui/react';
+import { ChakraProvider, Box, VStack, HStack, Heading, Image, Text, Container, Spacer, Tabs, TabList, Tab, TabPanels, TabPanel, useToast, Link } from '@chakra-ui/react';
 import { useState, useEffect } from 'react';
 import type { BAppConfig, StrategyTokenWeight, UIStrategy, TokenCoefficient } from './types';
 import { getParticipantWeights, calculateStrategyWeights, generateRandomStrategy, getDepositedBalancesForStrategy, getDelegatedBalances } from './services/sdk';
-import { calculateSimulationWeights, convertUIStrategiesToStrategyTokenWeight, calculateSimulationParticipantWeights } from './services/simulation-utils';
 import ConfigPanel from './components/ConfigPanel';
 import StrategyList from './components/StrategyList';
 import WeightDisplay from './components/WeightDisplay';
 import theme from './theme';
 import { formatEther, parseEther } from 'viem';
+
+// Feature flag to enable/disable the Simulation tab
+const ENABLE_SIMULATION_TAB = false;
 
 const defaultConfig: BAppConfig = {
   bAppId: "0x24d1f83f9028236841429aab770b0efcc13ebeb5",
@@ -49,6 +51,8 @@ function App() {
   
   // Toast for user feedback
   const toast = useToast();
+
+  const [activeTabIndex, setActiveTabIndex] = useState(0);
 
   // Helper function to extract relevant tokens from participant weights response
   const extractRelevantTokens = (participantWeights: any[]): Set<string> => {
@@ -208,6 +212,7 @@ function App() {
     }
     
     try {
+
       // Use the SDK calculation with the configured calculation type
       const newWeights = calculateStrategyWeights(
         strategiesWithTokens as StrategyTokenWeight[], 
@@ -227,103 +232,51 @@ function App() {
 
 
 
-  // Simulation effects
-  useEffect(() => {
-    const fetchSimulationStrategies = async () => {
-      // Reset token coefficients when bApp changes to clear old tokens
-      setSimulationConfig(prev => ({ ...prev, tokenCoefficients: [] }));
-      setIsLoadingSimulationData(true);
-      
-      try {
-        const fetchedStrategies = await getParticipantWeights(simulationConfig.bAppId);
-        
-        // Extract relevant tokens from participant weights response
-        const relevantTokensSet = extractRelevantTokens(fetchedStrategies);
-        setSimulationRelevantTokens(relevantTokensSet);
-      
-      // Convert to StrategyTokenWeight format for original strategies storage
-      const originalStrategiesConverted: StrategyTokenWeight[] = fetchedStrategies.map((strategy: any) => {
-        const tokens: { [key: string]: { amount: string; obligatedPercentage: number } } = {};
-        
-        if (strategy.tokenWeights) {
-          strategy.tokenWeights.forEach((tw: any) => {
-            tokens[tw.token] = {
-              amount: tw.depositAmount ? formatEther(BigInt(tw.depositAmount)) : "0",
-              obligatedPercentage: tw.weight || 0
-            };
-          });
-        }
-        
-        return {
-          strategy: Number(strategy.id || strategy.strategy || 0),
-          tokens: tokens
-        };
-      });
-      
-
-      
-              // Process strategies exactly like calculator tab to ensure same data format
-        const processedStrategies = await Promise.all(
-          fetchedStrategies.map(async (strategy: any) => {
-            const strategyId = strategy.id || strategy.strategy;
-            
-            // Fetch deposits for this strategy (same as calculator)
-            const depositsResponse = await getDepositedBalancesForStrategy(strategyId?.toString());
-          
-          // Convert deposits to tokenWeights format AND tokens object (same as calculator)
-          const tokenWeights: any[] = [];
-          const tokensObject: Record<string, any> = {};
-          
+  // Define fetchSimulationStrategies as a named async function so it can be called from multiple places
+  const fetchSimulationStrategies = async () => {
+    setSimulationConfig(prev => ({ ...prev, tokenCoefficients: [] }));
+    setIsLoadingSimulationData(true);
+    try {
+      // Fetch all strategies from the real subgraph (do not filter out zero-balance strategies)
+      const fetchedStrategies = await getParticipantWeights(simulationConfig.bAppId);
+      // Extract supported tokens from the real API response
+      const supportedTokensSet = extractRelevantTokens(fetchedStrategies);
+      setSimulationRelevantTokens(supportedTokensSet);
+      // Use tokenWeights directly, but fetch and set depositAmount for each token as in the calculator tab
+      const processedStrategies = await Promise.all(
+        fetchedStrategies.map(async (strategy: any, idx: number) => {
+          const strategyId = strategy.strategy ?? strategy.id ?? idx;
+          // Fetch deposits for this strategy
+          const depositsResponse = await getDepositedBalancesForStrategy(strategyId?.toString());
+          // Group deposits by token
+          const depositsByToken: Record<string, any[]> = {};
           if (depositsResponse && depositsResponse.deposits && depositsResponse.deposits.length > 0) {
-            // Group deposits by token (same as calculator)
-            const depositsByToken: Record<string, any[]> = {};
             depositsResponse.deposits.forEach((deposit: any) => {
               if (!depositsByToken[deposit.token]) {
                 depositsByToken[deposit.token] = [];
               }
               depositsByToken[deposit.token].push(deposit);
             });
-            
-            // Convert each token's deposits to tokenWeight format AND tokens object (same as calculator)
-            Object.entries(depositsByToken).forEach(([tokenAddress, deposits]) => {
-              const totalAmount = deposits.reduce((sum, deposit) => {
-                return sum + BigInt(deposit.depositAmount);
-              }, BigInt(0));
-              
-              // Find the original weight for this token from the API response
-              const originalTokenWeight = strategy.tokenWeights?.find((tw: any) => 
-                tw.token === tokenAddress
-              );
-              const originalWeight = originalTokenWeight?.weight || originalTokenWeight?.obligatedPercentage || 0;
-              
-              const tokenWeight = {
-                id: `${strategyId}-${tokenAddress}`,
-                token: tokenAddress,
-                tokenAmount: totalAmount.toString(),
-                strategy: strategyId,
-                weight: originalWeight, // Preserve original weight from API
-                depositAmount: totalAmount.toString() // Add depositAmount for UI compatibility
-              };
-              
-              tokenWeights.push(tokenWeight);
-              tokensObject[tokenAddress] = {
-                amount: formatEther(totalAmount),
-                obligatedPercentage: originalWeight // Preserve original weight from API
-              };
-            });
           }
-          
+          // Map tokenWeights and set depositAmount
+          const tokenWeights = (strategy.tokenWeights || []).map((tw: any) => {
+            const token = tw.token;
+            const deposits = depositsByToken[token] || [];
+            const totalAmount = deposits.reduce((sum, deposit) => sum + BigInt(deposit.depositAmount), BigInt(0));
+            return {
+              ...tw,
+              depositAmount: totalAmount.toString()
+            };
+          });
           return {
-            ...strategy,
-            id: strategyId, // Ensure consistent ID field
-            strategy: strategyId, // Ensure consistent strategy field
+            id: strategyId,
+            strategy: strategyId,
             tokenWeights,
-            tokens: tokensObject, // This is the key - same as calculator tab
-            validatorBalanceWeight: strategy.validatorBalanceWeight || 0
+            validatorBalanceWeight: strategy.validatorBalanceWeight || 0,
+            tokens: strategy.tokens || {}
           };
-                  })
-        );
-      
+        })
+      );
       // Create deposits map for StrategyList component
       const depositsMap = new Map();
       for (const strategy of processedStrategies) {
@@ -333,27 +286,38 @@ function App() {
           const mockDeposits = {
             deposits: strategy.tokenWeights.map((tw: any) => ({
               token: tw.token,
-              depositAmount: tw.tokenAmount || tw.depositAmount || "0"
+              depositAmount: tw.depositAmount || "0"
             }))
           };
           depositsMap.set(strategyId, mockDeposits);
         }
       }
-      
-              // Set strategies directly - ConfigPanel will auto-detect tokens and update coefficients
-      
-        setSimulationStrategies(processedStrategies as UIStrategy[]);
-        setSimulationStrategyDeposits(depositsMap);
-        // Reset the edited flag when loading fresh data
-        setSimulationDataEdited(false);
-      } catch (error) {
-        console.error('Error fetching simulation strategies:', error);
-      } finally {
-        setIsLoadingSimulationData(false);
-      }
-    };
-    fetchSimulationStrategies();
+      setSimulationStrategies(processedStrategies as UIStrategy[]);
+      setSimulationStrategyDeposits(depositsMap);
+      setSimulationDataEdited(false);
+    } catch (error) {
+      console.error('Error fetching simulation strategies:', error);
+    } finally {
+      setIsLoadingSimulationData(false);
+    }
+  };
+
+  useEffect(() => {
+    if (ENABLE_SIMULATION_TAB) {
+      fetchSimulationStrategies();
+    }
   }, [simulationConfig.bAppId]); // Only reload when BApp ID changes, not when token coefficients change
+
+  // Refresh simulation strategies when switching to the simulation tab
+  useEffect(() => {
+    if (activeTabIndex === 1) {
+      // Only fetch if simulation tab is active
+      if (ENABLE_SIMULATION_TAB) {
+        fetchSimulationStrategies();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabIndex, simulationConfig.bAppId]);
 
   // Fetch delegated balances for the simulation BApp
   useEffect(() => {
@@ -367,7 +331,9 @@ function App() {
     };
 
     if (simulationConfig.bAppId) {
-      fetchSimulationDelegatedBalances();
+      if (ENABLE_SIMULATION_TAB) {
+        fetchSimulationDelegatedBalances();
+      }
     }
   }, [simulationConfig.bAppId]);
 
@@ -461,19 +427,16 @@ function App() {
         
         try {
           let weightResults: Map<string, number>;
-          
-          // Step 1: Calculate participant weights based on edited amounts
-          const simulationParticipantWeights = await calculateSimulationParticipantWeights(
-            strategiesWithTokens,
-            simulationConfig.tokenCoefficients
+          // Step 1: Use mocked SDK to calculate participant weights based on edited amounts
+          const simulationParticipantWeights = await getParticipantWeights(
+            simulationConfig.bAppId,
+            strategiesWithTokens
           );
-          
           // Step 2: Use SDK calculation with our custom participant weights
           const options = {
             coefficients: simulationConfig.tokenCoefficients,
             validatorCoefficient: simulationConfig.validatorCoefficient
           };
-          
           // Use SDK calculation with our custom participant weights (same flow as calculator)
           weightResults = calculateStrategyWeights(
             simulationParticipantWeights as any,
@@ -498,6 +461,7 @@ function App() {
           
         } catch (error) {
           console.error('🔍 [Simulation] Error calculating simulation weights:', error);
+          console.error('🔍 [Simulation] Error stack:', error instanceof Error ? error.stack : 'No stack trace available');
           setSimulationWeights(new Map());
           
           // Show error toast if this was for edited data
@@ -765,46 +729,10 @@ function App() {
     onConfigChange: (config: BAppConfig) => void,
     onAddRandomStrategy: () => void,
     onStrategiesChange: (strategies: UIStrategy[]) => void
-  ) => (
-    <VStack spacing={8} align="stretch">
-      {/* Configuration Section */}
-      <Box 
-        bg="white" 
-        borderRadius="3xl" 
-        p={{ base: 6, md: 8, lg: 10 }}
-        boxShadow="2xl"
-        border="1px solid"
-        borderColor="ssv.100"
-        transform="translateY(0)"
-        transition="all 0.3s ease"
-        _hover={{ transform: "translateY(-4px)", boxShadow: "3xl" }}
-      >
-        <VStack spacing={8} align="stretch">
-          <HStack spacing={4} align="center">
-            <Box w={4} h={4} bg="ssv.500" borderRadius="full" />
-            <Heading size="lg" color="#2563eb" fontWeight="bold">
-              Simulation Configuration
-            </Heading>
-            <Spacer />
-          </HStack>
-          <ConfigPanel
-            config={currentConfig}
-            onConfigChange={onConfigChange}
-            onAddRandomStrategy={onAddRandomStrategy}
-            strategies={currentStrategies}
-            deposits={currentDeposits}
-            delegatedBalances={currentDelegatedBalances}
-            isSimulation={true}
-            isLoadingData={isLoadingSimulationData}
-            relevantTokens={simulationRelevantTokens}
-            onTokenAdded={handleTokenAdded}
-          />
-        </VStack>
-      </Box>
-
-      {/* Strategies and Weights Grid */}
+  ) => {
+    return (
       <VStack spacing={8} align="stretch">
-        {/* Strategies Section */}
+        {/* Configuration Section */}
         <Box 
           bg="white" 
           borderRadius="3xl" 
@@ -820,63 +748,101 @@ function App() {
             <HStack spacing={4} align="center">
               <Box w={4} h={4} bg="ssv.500" borderRadius="full" />
               <Heading size="lg" color="#2563eb" fontWeight="bold">
-                Simulation Strategies
+                Simulation Configuration
               </Heading>
               <Spacer />
-              <Text fontSize="sm" color="#3b82f6" fontWeight="medium">
-                {currentStrategies.length} strategies loaded
-              </Text>
             </HStack>
-            <StrategyList 
-              strategies={currentStrategies} 
-              deposits={currentDeposits} 
+            <ConfigPanel
+              config={currentConfig}
+              onConfigChange={onConfigChange}
+              onAddRandomStrategy={onAddRandomStrategy}
+              strategies={currentStrategies}
+              deposits={currentDeposits}
               delegatedBalances={currentDelegatedBalances}
-              editable={true}
-              onStrategiesChange={onStrategiesChange}
-              onDelegatedBalanceChange={handleSimulationDelegatedBalanceChange}
               isSimulation={true}
-              weights={currentWeights}
-              tokenCoefficients={currentConfig.tokenCoefficients}
+              isLoadingData={isLoadingSimulationData}
               relevantTokens={simulationRelevantTokens}
+              onTokenAdded={handleTokenAdded}
             />
           </VStack>
         </Box>
 
-        {/* Weights Section */}
-        <Box 
-          bg="white" 
-          borderRadius="3xl" 
-          p={{ base: 6, md: 8, lg: 10 }}
-          boxShadow="2xl"
-          border="1px solid"
-          borderColor="ssv.100"
-          transform="translateY(0)"
-          transition="all 0.3s ease"
-          _hover={{ transform: "translateY(-4px)", boxShadow: "3xl" }}
-        >
-          <VStack spacing={8} align="stretch">
-            <HStack spacing={4} align="center">
-              <Box w={4} h={4} bg="ssv.500" borderRadius="full" />
-              <Heading size="lg" color="#2563eb" fontWeight="bold">
-                Simulated Weight Distribution
-              </Heading>
-              <Spacer />
-              <Text fontSize="sm" color="#3b82f6" fontWeight="medium">
-                Simulated results
-              </Text>
-            </HStack>
-            <WeightDisplay 
-              weights={currentWeights} 
-              allStrategies={currentStrategies}
-              isSimulation={true}
-              simulationResults={simulationDetailedResults}
-              isLoading={isCalculatingSimulationWeights}
-            />
-          </VStack>
-        </Box>
+        {/* Strategies and Weights Grid */}
+        <VStack spacing={8} align="stretch">
+          {/* Strategies Section */}
+          <Box 
+            bg="white" 
+            borderRadius="3xl" 
+            p={{ base: 6, md: 8, lg: 10 }}
+            boxShadow="2xl"
+            border="1px solid"
+            borderColor="ssv.100"
+            transform="translateY(0)"
+            transition="all 0.3s ease"
+            _hover={{ transform: "translateY(-4px)", boxShadow: "3xl" }}
+          >
+            <VStack spacing={8} align="stretch">
+              <HStack spacing={4} align="center">
+                <Box w={4} h={4} bg="ssv.500" borderRadius="full" />
+                <Heading size="lg" color="#2563eb" fontWeight="bold">
+                  Simulation Strategies
+                </Heading>
+                <Spacer />
+                <Text fontSize="sm" color="#3b82f6" fontWeight="medium">
+                  {currentStrategies.length} strategies loaded
+                </Text>
+              </HStack>
+              <StrategyList 
+                strategies={currentStrategies} 
+                deposits={currentDeposits} 
+                delegatedBalances={currentDelegatedBalances}
+                editable={true}
+                onStrategiesChange={onStrategiesChange}
+                onDelegatedBalanceChange={handleSimulationDelegatedBalanceChange}
+                isSimulation={true}
+                weights={currentWeights}
+                tokenCoefficients={currentConfig.tokenCoefficients}
+                relevantTokens={simulationRelevantTokens}
+              />
+            </VStack>
+          </Box>
+
+          {/* Weights Section */}
+          <Box 
+            bg="white" 
+            borderRadius="3xl" 
+            p={{ base: 6, md: 8, lg: 10 }}
+            boxShadow="2xl"
+            border="1px solid"
+            borderColor="ssv.100"
+            transform="translateY(0)"
+            transition="all 0.3s ease"
+            _hover={{ transform: "translateY(-4px)", boxShadow: "3xl" }}
+          >
+            <VStack spacing={8} align="stretch">
+              <HStack spacing={4} align="center">
+                <Box w={4} h={4} bg="ssv.500" borderRadius="full" />
+                <Heading size="lg" color="#2563eb" fontWeight="bold">
+                  Simulated Weight Distribution
+                </Heading>
+                <Spacer />
+                <Text fontSize="sm" color="#3b82f6" fontWeight="medium">
+                  Simulated results
+                </Text>
+              </HStack>
+              <WeightDisplay 
+                weights={currentWeights} 
+                allStrategies={currentStrategies}
+                isSimulation={true}
+                simulationResults={simulationDetailedResults}
+                isLoading={isCalculatingSimulationWeights}
+              />
+            </VStack>
+          </Box>
+        </VStack>
       </VStack>
-    </VStack>
-  );
+    );
+  };
 
   // Helper function to convert simulation results to StrategyTokenWeight format
   const convertSimulationResultsToStrategyTokenWeights = (
@@ -951,7 +917,39 @@ function App() {
 
   return (
     <ChakraProvider theme={theme}>
-      <Box minH="100vh" bg="linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)" overflowX="hidden" w="100%">
+      <Box minH="100vh" bg="linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)" overflowX="hidden" w="100%" position="relative">
+        {/* GitHub Badge */}
+        <Link
+          href="https://github.com/taylorferran/ssv-strategy-weights"
+          isExternal
+          position="absolute"
+          top={4}
+          right={4}
+          zIndex={10}
+          bg="rgba(255, 255, 255, 0.2)"
+          color="white"
+          p={3}
+          borderRadius="full"
+          _hover={{
+            bg: "rgba(255, 255, 255, 0.3)",
+            transform: "translateY(-2px)",
+          }}
+          transition="all 0.2s ease"
+          display="flex"
+          alignItems="center"
+          justifyContent="center"
+        >
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path d="M12 0C5.374 0 0 5.373 0 12 0 17.302 3.438 21.8 8.207 23.387c.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/>
+          </svg>
+        </Link>
+        
         {/* Hero Section */}
         <Box maxW="100%" px={{ base: 4, md: 6 }} py={16} mx="auto">
           <VStack spacing={6} textAlign="center" mb={16}>
@@ -965,7 +963,10 @@ function App() {
           </VStack>
 
           {/* Tabbed Interface */}
-          <Tabs size="lg" variant="soft-rounded" colorScheme="whiteAlpha" isLazy>
+          <Tabs size="lg" variant="soft-rounded" colorScheme="whiteAlpha" isLazy
+            onChange={setActiveTabIndex}
+            index={0}
+          >
             <TabList 
               borderRadius="2xl" 
               p={2} 
@@ -987,20 +988,22 @@ function App() {
               >
                 Calculator
               </Tab>
-              <Tab 
-                color="white" 
-                fontWeight="bold" 
-                _selected={{ 
-                  bg: "white", 
-                  color: "#2563eb",
-                  shadow: "lg"
-                }}
-                borderRadius="xl"
-                px={8}
-                py={3}
-              >
-                Simulations
-              </Tab>
+              {ENABLE_SIMULATION_TAB && (
+                <Tab 
+                  color="white" 
+                  fontWeight="bold" 
+                  _selected={{ 
+                    bg: "white", 
+                    color: "#2563eb",
+                    shadow: "lg"
+                  }}
+                  borderRadius="xl"
+                  px={8}
+                  py={3}
+                >
+                  Simulations
+                </Tab>
+              )}
             </TabList>
 
             <TabPanels>
@@ -1016,20 +1019,20 @@ function App() {
                   handleAddRandomStrategy
                 )}
               </TabPanel>
-
-              {/* Simulations Tab */}
-              <TabPanel p={0}>
-                {renderSimulationContent(
-                  simulationConfig,
-                  simulationStrategies,
-                  simulationWeights,
-                  simulationStrategyDeposits,
-                  simulationDelegatedBalances,
-                  setSimulationConfig,
-                  handleAddRandomSimulationStrategy,
-                  handleSimulationStrategiesChange
-                )}
-              </TabPanel>
+              {ENABLE_SIMULATION_TAB && (
+                <TabPanel p={0}>
+                  {renderSimulationContent(
+                    simulationConfig,
+                    simulationStrategies,
+                    simulationWeights,
+                    simulationStrategyDeposits,
+                    simulationDelegatedBalances,
+                    setSimulationConfig,
+                    handleAddRandomSimulationStrategy,
+                    handleSimulationStrategiesChange
+                  )}
+                </TabPanel>
+              )}
             </TabPanels>
           </Tabs>
         </Box>
